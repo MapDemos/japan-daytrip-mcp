@@ -1,0 +1,27 @@
+{
+  "name": "mapbox-demo-template",
+  "version": "1.0.0",
+  "description": "Template for deploying Mapbox demos to demos.mapbox.com",
+  "main": "index.js",
+  "scripts": {
+    "start": "vite --open",
+    "build": "vite build --outDir build --base=/YOUR-REPO-NAME/",
+    "serve": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^2.5.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MapDemos/mapbox-demo-template.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/MapDemos/mapbox-demo-template/issues"
+  },
+  "homepage": "https://github.com/MapDemos/mapbox-demo-template#readme",
+  "dependencies": {
+    "mapbox-gl": "^3.15.0"
+  }
+}
