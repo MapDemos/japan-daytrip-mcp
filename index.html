@@ -1,25 +1,151 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <title><!-- Your title goes here --></title>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="shortcut icon" href="https://static-assets.mapbox.com/branding/favicon/v1/favicon.ico" type="image/x-icon"/>
-    <style>
-      body {
-        margin: 0;
-        padding: 0;
-      }
-      #map {
-        position: absolute;
-        top: 0;
-        bottom: 0;
-        width: 100%;
-      }
-    </style>
-  </head>
-  <body>
-    <div id="map"></div>
-    <script src="./index.js" type="module"></script>
-  </body>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Japan AI Travel Agent</title>
+  <meta name="description" content="AI-powered Japan travel agent with Mapbox and Claude">
+
+  <!-- Favicon -->
+  <link rel="shortcut icon" href="https://static-assets.mapbox.com/branding/favicon/v1/favicon.ico" type="image/x-icon"/>
+
+  <!-- Mapbox GL JS -->
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.0.1/mapbox-gl.css" rel="stylesheet">
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.0.1/mapbox-gl.js"></script>
+
+  <!-- Mapbox GL Language Plugin -->
+  <script src="https://unpkg.com/@mapbox/mapbox-gl-language@1.0.1/dist/mapbox-gl-language.js"></script>
+
+  <!-- Mapbox Map Tools MCP Library -->
+  <script src="https://unpkg.com/mapbox-map-tools-mcp@latest/src/mapbox-map-tools.js"></script>
+
+  <!-- Application Styles -->
+  <link rel="stylesheet" href="./styles/main.css">
+</head>
+<body>
+  <!-- Header -->
+  <header class="app-header">
+    <div class="header-content">
+      <div class="header-left">
+        <h1 id="app-title">🇯🇵 AI旅行エージェント</h1>
+        <p id="app-subtitle" class="subtitle">日本全国の食べる・買う・遊ぶ・見るスポットを発見</p>
+      </div>
+      <div class="header-right">
+        <div id="token-counter" class="token-counter" title="Conversation token usage">
+          <span id="token-count">0k / 200k (0%)</span>
+        </div>
+        <button id="lang-toggle" class="lang-btn" title="Switch language">English</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Application Container -->
+  <div class="app-container">
+
+    <!-- Chat Panel -->
+    <div class="chat-panel">
+
+      <!-- Chat Messages -->
+      <div class="chat-messages" id="chatMessages">
+        <!-- Welcome message will be added by JavaScript -->
+      </div>
+
+      <!-- Input Area -->
+      <div class="input-area">
+        <div class="input-container">
+          <input
+            type="text"
+            id="chatInput"
+            class="chat-input"
+            placeholder="日本の場所について聞いてください...（例：「渋谷のレストランを探して」）"
+            autocomplete="off"
+          />
+          <button id="sendBtn" class="send-btn">
+            <span id="sendBtnText">送信</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Thinking Display -->
+      <div class="thinking-display" id="thinkingDisplay" style="display: none;">
+        <div class="thinking-header">
+          <span class="thinking-icon">🤔</span>
+          <span class="thinking-title">AI Reasoning Process</span>
+        </div>
+        <div class="thinking-steps" id="thinkingSteps"></div>
+      </div>
+
+      <!-- Loading Indicator -->
+      <div class="loading-indicator" id="loadingIndicator" style="display: none;">
+        <div class="loading-spinner"></div>
+        <span id="loadingText">Processing...</span>
+      </div>
+
+    </div>
+
+    <!-- Map Panel -->
+    <div class="map-panel">
+
+      <!-- Map Container -->
+      <div id="map" class="map-container"></div>
+
+      <!-- Map Controls -->
+      <div class="map-controls">
+        <button id="recenterBtn" class="control-btn" title="Recenter to your location">
+          <span class="icon">🎯</span>
+          <span class="label" data-i18n="recenter">現在地</span>
+        </button>
+        <button id="clearChatBtn" class="control-btn" title="Clear conversation">
+          <span class="icon">💬</span>
+          <span class="label" data-i18n="clearChat">チャットをクリア</span>
+        </button>
+      </div>
+
+    </div>
+
+  </div>
+
+  <!-- POI Details Modal -->
+  <div class="modal" id="poiModal" style="display: none;">
+    <div class="modal-content poi-modal-content">
+      <div class="modal-header">
+        <h3 id="poiName">POI Details</h3>
+        <button class="modal-close" id="closePoiModal">×</button>
+      </div>
+      <div class="modal-body poi-modal-body">
+        <div id="poiPhoto" class="poi-photo" style="display: none;">
+          <img id="poiPhotoImg" src="" alt="POI Photo">
+        </div>
+        <dl class="poi-details">
+          <dt>住所：</dt>
+          <dd id="poiAddress">-</dd>
+          <dt>電話：</dt>
+          <dd id="poiPhone">-</dd>
+          <dt>営業時間：</dt>
+          <dd id="poiHours">-</dd>
+          <dt>おすすめ：</dt>
+          <dd id="poiRating">-</dd>
+          <dt>料金：</dt>
+          <dd id="poiPrice">-</dd>
+        </dl>
+        <div id="poiSummary" class="poi-summary"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Error Modal -->
+  <div class="modal" id="errorModal" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>⚠️ Error</h3>
+        <button class="modal-close" id="closeErrorModal">×</button>
+      </div>
+      <div class="modal-body" id="errorMessage"></div>
+    </div>
+  </div>
+
+  <!-- Application Script (ES6 Module) -->
+  <script src="./index.js" type="module"></script>
+
+</body>
 </html>

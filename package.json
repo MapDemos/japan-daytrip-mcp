@@ -1,27 +1,40 @@
 {
-  "name": "mapbox-demo-template",
+  "name": "japan-daytrip-mcp",
   "version": "1.0.0",
-  "description": "Template for deploying Mapbox demos to demos.mapbox.com",
+  "description": "AI-powered Japan travel assistant with triple MCP architecture (Mapbox MCP + Rurubu MCP + Map Tools)",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "vite --open",
-    "build": "vite build --outDir build --base=/YOUR-REPO-NAME/",
+    "dev": "npm start",
+    "build": "vite build --outDir build --base=/japan-daytrip-mcp/",
     "serve": "vite preview"
   },
+  "keywords": [
+    "mapbox",
+    "mcp",
+    "claude",
+    "ai",
+    "japan",
+    "travel",
+    "tourism",
+    "rurubu",
+    "geospatial"
+  ],
   "devDependencies": {
-    "vite": "^2.5.4"
+    "vite": "^5.0.0"
+  },
+  "dependencies": {
+    "mapbox-gl": "^3.15.0"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MapDemos/mapbox-demo-template.git"
+    "url": "git+https://github.com/MapDemos/japan-daytrip-mcp.git"
   },
-  "author": "",
+  "author": "Mapbox Solutions Architecture",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/MapDemos/mapbox-demo-template/issues"
+    "url": "https://github.com/MapDemos/japan-daytrip-mcp/issues"
   },
-  "homepage": "https://github.com/MapDemos/mapbox-demo-template#readme",
-  "dependencies": {
-    "mapbox-gl": "^3.15.0"
-  }
+  "homepage": "https://demos.mapbox.com/japan-daytrip-mcp/"
 }
