@@ -16,8 +16,11 @@ export class MapController {
     this.userLocationMarker = null;
     this.routes = []; // Track all routes with their layers and markers
     this.isochrones = []; // Track all isochrone layers
+    this.starMarkers = []; // Track star markers for recommended POIs
     this.languageControl = null; // Mapbox GL Language plugin
     this.geolocateControl = null; // Mapbox built-in geolocation control
+    this.eventHandlers = []; // Track all event listeners for cleanup
+    this.domEventHandlers = []; // Track DOM event listeners
   }
 
   /**
@@ -26,8 +29,6 @@ export class MapController {
    */
   async initialize(containerId) {
     try {
-      console.log('Initializing Map Controller...');
-
       // Set Mapbox access token
       mapboxgl.accessToken = this.config.MAPBOX_ACCESS_TOKEN;
 
@@ -65,13 +66,10 @@ export class MapController {
         this.map.on('load', resolve);
       });
 
-      console.log('Map loaded successfully');
-
       // Initialize language control (Mapbox GL Language plugin)
       if (typeof MapboxLanguage !== 'undefined') {
         this.languageControl = new MapboxLanguage();
         this.map.addControl(this.languageControl);
-        console.log('Language control initialized');
       } else {
         console.warn('MapboxLanguage plugin not available');
       }
@@ -83,7 +81,6 @@ export class MapController {
           enablePopups: false,
           enableHoverEffects: true
         });
-        console.log('Map Tools library initialized with custom options');
       } else {
         console.warn('MapboxMapTools not found. Make sure the CDN script is loaded.');
       }
@@ -380,6 +377,120 @@ export class MapController {
             properties: {},
             required: []
           }
+        },
+        {
+          name: 'clear_all_markers',
+          description: 'Remove all markers from the map (including points added via add_points_to_map and star markers). Use when user asks to clear, remove, or delete all markers.',
+          input_schema: {
+            type: 'object',
+            properties: {},
+            required: []
+          }
+        },
+        {
+          name: 'highlight_recommended_pois',
+          description: 'Add star markers to highlight recommended POIs on the map. Use this after making specific recommendations. Provide POI names AND coordinates to ensure correct placement.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              pois: {
+                type: 'array',
+                description: 'Array of POI objects with name and coordinates',
+                items: {
+                  type: 'object',
+                  properties: {
+                    name: {
+                      type: 'string',
+                      description: 'POI name'
+                    },
+                    coordinates: {
+                      type: 'array',
+                      description: 'Coordinates as [longitude, latitude]',
+                      items: {
+                        type: 'number'
+                      },
+                      minItems: 2,
+                      maxItems: 2
+                    }
+                  },
+                  required: ['name', 'coordinates']
+                }
+              }
+            },
+            required: ['pois']
+          }
+        },
+        {
+          name: 'draw_itinerary_route',
+          description: 'Draw a route on the map with directional arrows showing an itinerary path through multiple locations. Perfect for day trips, tours, and multi-stop routes. The route will appear as a colored line with arrows indicating the direction of travel. Use this when planning itineraries or showing the order to visit multiple places.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              waypoints: {
+                type: 'array',
+                description: 'Array of waypoint coordinates in order of visit. Format: [[lng1, lat1], [lng2, lat2], ...]. Minimum 2 waypoints.',
+                items: {
+                  type: 'array',
+                  items: { type: 'number' },
+                  minItems: 2,
+                  maxItems: 2
+                },
+                minItems: 2
+              },
+              profile: {
+                type: 'string',
+                description: 'Travel mode: "walking" (default for city exploration), "cycling", or "driving"',
+                enum: ['walking', 'cycling', 'driving'],
+                default: 'walking'
+              },
+              color: {
+                type: 'string',
+                description: 'Route color in hex format (default: "#1976d2" blue)',
+                default: '#1976d2'
+              }
+            },
+            required: ['waypoints']
+          }
+        },
+        {
+          name: 'add_visit_order_markers',
+          description: 'Add numbered markers (1, 2, 3...) to show the order to visit locations in an itinerary. Use this TOGETHER with draw_itinerary_route to show both the route AND the visit sequence. The numbers help users understand which place to visit first, second, etc.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              locations: {
+                type: 'array',
+                description: 'Array of locations in visit order with their names and coordinates',
+                items: {
+                  type: 'object',
+                  properties: {
+                    name: {
+                      type: 'string',
+                      description: 'Location/POI name to show in popup'
+                    },
+                    coordinates: {
+                      type: 'array',
+                      description: 'Coordinates as [longitude, latitude]',
+                      items: { type: 'number' },
+                      minItems: 2,
+                      maxItems: 2
+                    },
+                    label: {
+                      type: 'string',
+                      description: 'Optional: Custom label for marker (default: sequential numbers 1, 2, 3...)'
+                    }
+                  },
+                  required: ['name', 'coordinates']
+                }
+              },
+              color: {
+                type: 'string',
+                description: 'Marker background color in hex format (default: "#1976d2" blue)',
+                default: '#1976d2'
+              }
+            },
+            required: ['locations']
+          }
         }
       );
 
@@ -396,8 +507,6 @@ export class MapController {
    * @param {object} args - Tool arguments
    */
   async executeTool(toolName, args) {
-    console.log(`[Map Tools] Executing: ${toolName}`, args);
-
     try {
       // Handle Mapbox service tools
       if (toolName === 'geocode_location') {
@@ -484,6 +593,36 @@ export class MapController {
         return await this.executeGetAllMapPois(args);
       }
 
+      // get_visible_pois removed - use get_poi_summary instead
+
+      if (toolName === 'clear_all_markers') {
+        // Clear all DOM markers
+        this.markers.forEach(marker => marker.remove());
+        this.markers = [];
+
+        // Clear star markers
+        this.clearStarMarkers();
+
+        return {
+          content: [{
+            type: 'text',
+            text: 'All markers have been removed from the map.'
+          }]
+        };
+      }
+
+      if (toolName === 'highlight_recommended_pois') {
+        return await this.executeHighlightRecommendedPOIs(args);
+      }
+
+      if (toolName === 'draw_itinerary_route') {
+        return await this.executeDrawItineraryRoute(args);
+      }
+
+      if (toolName === 'add_visit_order_markers') {
+        return await this.executeAddVisitOrderMarkers(args);
+      }
+
       // Handle map visualization tools
       if (!this.mapTools) {
         throw new Error('Map Tools not initialized');
@@ -503,13 +642,10 @@ export class MapController {
 
       // Transform GeoJSON format to points format for add_points_to_map
       if (toolName === 'add_points_to_map') {
-        console.log('[Map Tools] Original args before transformation:', JSON.stringify(args, null, 2));
         args = this.transformGeoJSONToPoints(args);
-        console.log('[Map Tools] Transformed args:', JSON.stringify(args, null, 2));
 
         // Safety check: if args still doesn't have points, create an empty array
         if (!args.points || !Array.isArray(args.points)) {
-          console.error('[Map Tools] Transformation failed - no points array found. Args:', args);
           return {
             content: [{
               type: 'text',
@@ -518,9 +654,38 @@ export class MapController {
             isError: true
           };
         }
+
+        // Use custom marker implementation instead of circles
+        return await this.executeAddPointsAsMarkers(args);
       }
 
-      return await this.mapTools.executeTool(toolName, args);
+      const result = await this.mapTools.executeTool(toolName, args);
+
+      // Validate that result has non-empty content (Claude API requirement)
+      if (!result || !result.content || result.content.length === 0) {
+        return {
+          content: [{
+            type: 'text',
+            text: `Tool ${toolName} completed successfully.`
+          }]
+        };
+      }
+
+      // Check if content items are empty
+      const hasEmptyContent = result.content.some(item =>
+        !item.text || item.text.trim() === ''
+      );
+
+      if (hasEmptyContent) {
+        return {
+          content: [{
+            type: 'text',
+            text: `Tool ${toolName} completed successfully.`
+          }]
+        };
+      }
+
+      return result;
     } catch (error) {
       console.error(`[Map Tools] Error executing ${toolName}:`, error);
       return {
@@ -543,6 +708,7 @@ export class MapController {
     if (country) options.country = country;
     if (limit) options.limit = limit.toString();
 
+    // @ts-expect-error - geocodeLocation is async and returns Promise, await is necessary
     const result = await geocodeLocation(location, this.config.MAPBOX_ACCESS_TOKEN, options);
 
     if (!result) {
@@ -589,6 +755,7 @@ export class MapController {
     const options = {};
     if (types) options.types = types;
 
+    // @ts-ignore - reverseGeocode is async and returns Promise, await is necessary
     const result = await reverseGeocode(longitude, latitude, this.config.MAPBOX_ACCESS_TOKEN, options);
 
     if (!result) {
@@ -626,7 +793,7 @@ export class MapController {
   /**
    * Execute get_all_map_pois tool - Get all visible POIs grouped by location
    */
-  async executeGetAllMapPois(args) {
+  async executeGetAllMapPois() {
     if (!this.app) {
       return {
         content: [{
@@ -681,6 +848,332 @@ export class MapController {
     }
   }
 
+
+  /**
+   * Execute add_points_to_map using DOM markers instead of circles
+   */
+  async executeAddPointsAsMarkers(args) {
+    const { points } = args;
+
+    if (!points || !Array.isArray(points) || points.length === 0) {
+      return {
+        content: [{
+          type: 'text',
+          text: 'No points to display'
+        }],
+        isError: true
+      };
+    }
+
+    try {
+      // Add marker for each point
+      points.forEach(point => {
+        const { longitude, latitude, title, description, color } = point;
+
+        // Create popup if there's a title or description
+        let popup = null;
+        if (title || description) {
+          const popupContent = `
+            <div style="padding: 8px;">
+              ${title ? `<div style="font-weight: bold; margin-bottom: 4px;">${title}</div>` : ''}
+              ${description ? `<div style="font-size: 12px; color: #666;">${description}</div>` : ''}
+            </div>
+          `;
+          popup = new mapboxgl.Popup({ offset: 25 }).setHTML(popupContent);
+        }
+
+        // Create Mapbox GL JS marker with default appearance
+        const marker = new mapboxgl.Marker({ color: color || '#FF0000' })
+          .setLngLat([longitude, latitude]);
+
+        // Attach popup if exists
+        if (popup) {
+          marker.setPopup(popup);
+        }
+
+        // Add to map
+        marker.addTo(this.map);
+
+        // Store marker for cleanup
+        this.markers.push(marker);
+      });
+
+      // Fit map to show all points
+      if (points.length > 0) {
+        const bounds = new mapboxgl.LngLatBounds();
+        points.forEach(point => {
+          bounds.extend([point.longitude, point.latitude]);
+        });
+        this.map.fitBounds(bounds, { padding: 50, duration: 1000 });
+      }
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: true,
+            message: `Added ${points.length} markers to the map`,
+            points_count: points.length
+          }, null, 2)
+        }]
+      };
+    } catch (error) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: error.message
+          }, null, 2)
+        }],
+        isError: true
+      };
+    }
+  }
+
+  /**
+   * Execute highlight_recommended_pois tool - Add star markers to recommended POIs
+   * Accepts POI objects with name and coordinates
+   */
+  async executeHighlightRecommendedPOIs(args) {
+    const { pois } = args;
+
+    if (!pois || !Array.isArray(pois) || pois.length === 0) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            message: 'No POIs provided to highlight'
+          }, null, 2)
+        }],
+        isError: true
+      };
+    }
+
+    try {
+      // Clear existing star markers
+      this.clearStarMarkers();
+
+      // Add star marker for each POI
+      pois.forEach(poi => {
+        const { name, coordinates } = poi;
+        const [lng, lat] = coordinates;
+
+        // Create wrapper for Mapbox positioning
+        const wrapper = document.createElement('div');
+        wrapper.style.width = '0px';
+        wrapper.style.height = '0px';
+        wrapper.style.position = 'relative';
+
+        // Create star marker element with solid background and pulsing animation
+        const el = document.createElement('div');
+        el.className = 'star-marker';
+        el.innerHTML = '⭐';
+        // Center the star on the wrapper's 0,0 point (POI location)
+        el.style.position = 'absolute';
+        el.style.left = '-18px';  // Half of 36px width
+        el.style.top = '-18px';   // Half of 36px height
+
+        // Add star to wrapper
+        wrapper.appendChild(el);
+
+        // Add popup with POI name (no close button, show on hover)
+        const popup = new mapboxgl.Popup({
+          offset: 25,
+          closeButton: false,
+          closeOnClick: false
+        })
+          .setHTML(`<div style="font-weight: bold; color: #ff6b35;">⭐ ${name}</div>`);
+
+        // Create and add marker (centered on POI)
+        const marker = new mapboxgl.Marker({
+          element: wrapper,
+          anchor: 'center'
+        })
+          .setLngLat([lng, lat])
+          .addTo(this.map);
+
+        // Create event handlers
+        const mouseEnterHandler = () => {
+          popup.setLngLat([lng, lat]).addTo(this.map);
+        };
+
+        const mouseLeaveHandler = () => {
+          popup.remove();
+        };
+
+        // Add tracked DOM event listeners
+        this.addDOMListener(el, 'mouseenter', mouseEnterHandler);
+        this.addDOMListener(el, 'mouseleave', mouseLeaveHandler);
+
+        this.starMarkers.push(marker);
+      });
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: true,
+            message: `Added ${pois.length} star markers to highlight recommended places on the map`,
+            highlighted_count: pois.length,
+            highlighted_pois: pois.map(p => p.name)
+          }, null, 2)
+        }]
+      };
+    } catch (error) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: error.message
+          }, null, 2)
+        }],
+        isError: true
+      };
+    }
+  }
+
+  /**
+   * Execute draw_itinerary_route tool
+   */
+  async executeDrawItineraryRoute(args) {
+    const { waypoints, profile = 'walking', color } = args;
+
+    if (!waypoints || !Array.isArray(waypoints) || waypoints.length < 2) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            message: 'At least 2 waypoints required to draw a route'
+          }, null, 2)
+        }],
+        isError: true
+      };
+    }
+
+    try {
+      // Convert waypoints to {lng, lat} format
+      const coordinates = waypoints.map(([lng, lat]) => ({ lng, lat }));
+
+      // Draw route (color will be determined by profile if not provided)
+      const result = await this.drawRoute(coordinates, {
+        color,
+        profile,
+        routeId: `itinerary-${Date.now()}`
+      });
+
+      // Determine what color was used (same logic as drawRoute)
+      const colors = {
+        driving: '#4264FB',
+        'driving-traffic': '#FF6B6B',
+        walking: '#4ECDC4',
+        cycling: '#95E77D'
+      };
+      const usedColor = color || colors[profile] || colors.walking;
+
+      // Format distance and duration for display
+      const distanceKm = (result.distance / 1000).toFixed(2);
+      const durationMin = Math.round(result.duration / 60);
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: true,
+            message: `Drew ${profile} route through ${waypoints.length} waypoints with directional arrows`,
+            route_id: result.routeId,
+            distance_km: distanceKm,
+            duration_minutes: durationMin,
+            waypoint_count: waypoints.length,
+            profile: profile,
+            color: usedColor
+          }, null, 2)
+        }]
+      };
+    } catch (error) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: error.message
+          }, null, 2)
+        }],
+        isError: true
+      };
+    }
+  }
+
+  /**
+   * Execute add_visit_order_markers tool
+   */
+  async executeAddVisitOrderMarkers(args) {
+    const { locations, color = '#1976d2' } = args;
+
+    if (!locations || !Array.isArray(locations) || locations.length === 0) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            message: 'No locations provided for numbered markers'
+          }, null, 2)
+        }],
+        isError: true
+      };
+    }
+
+    try {
+      // Convert locations to format expected by drawNumberedMarkers
+      const formattedLocations = locations.map((loc, index) => ({
+        lng: loc.coordinates[0],
+        lat: loc.coordinates[1],
+        name: loc.name,
+        label: loc.label || (index + 1).toString()
+      }));
+
+      // Draw numbered markers
+      this.drawNumberedMarkers(formattedLocations, { color });
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: true,
+            message: `Added ${locations.length} numbered markers showing visit order`,
+            marker_count: locations.length,
+            locations: locations.map((loc, i) => ({
+              number: i + 1,
+              name: loc.name
+            }))
+          }, null, 2)
+        }]
+      };
+    } catch (error) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: error.message
+          }, null, 2)
+        }],
+        isError: true
+      };
+    }
+  }
+
+  /**
+   * Clear all star markers from the map
+   */
+  clearStarMarkers() {
+    this.starMarkers.forEach(marker => marker.remove());
+    this.starMarkers = [];
+  }
+
   /**
    * Execute get_directions tool - Get directions between waypoints
    */
@@ -695,6 +1188,7 @@ export class MapController {
     };
 
     try {
+      // @ts-ignore - getDirections is async and returns Promise, await is necessary
       const result = await getDirections(waypoints, this.config.MAPBOX_ACCESS_TOKEN, options);
 
       const route = result.routes[0];
@@ -804,6 +1298,7 @@ export class MapController {
     };
 
     try {
+      // @ts-ignore - getIsochrone is async and returns Promise, await is necessary
       const result = await getIsochrone(coordinates, this.config.MAPBOX_ACCESS_TOKEN, options);
 
       // Add isochrone polygons to map
@@ -858,8 +1353,14 @@ export class MapController {
   async executeSearchLocation(args) {
     const { query, limit } = args;
 
+    // Ensure limit is between 1 and 10 (SearchBox API requirement)
+    let validLimit = 5; // default
+    if (limit !== undefined && limit !== null) {
+      validLimit = Math.max(1, Math.min(10, parseInt(limit)));
+    }
+
     const options = {
-      limit: limit || 5,
+      limit: validLimit,
       language: 'ja',  // Always use Japanese for better results in Japan
       types: 'poi',    // Search for points of interest
       country: 'JP'    // Limit to Japan
@@ -869,10 +1370,10 @@ export class MapController {
     if (this.userLocationMarker) {
       const userLngLat = this.userLocationMarker.getLngLat();
       options.proximity = [userLngLat.lng, userLngLat.lat];
-      console.log(`[Map Controller] Using user location as proximity: [${userLngLat.lng}, ${userLngLat.lat}]`);
     }
 
     try {
+      // @ts-ignore - searchLocation is async and returns Promise, await is necessary
       const result = await searchLocation(query, this.config.MAPBOX_ACCESS_TOKEN, options);
 
       return {
@@ -904,13 +1405,11 @@ export class MapController {
   transformGeoJSONToPoints(args) {
     // If args already has a 'points' array, return as-is
     if (args.points && Array.isArray(args.points)) {
-      console.log('[Map Tools] Args already in points format');
       return args;
     }
 
     // If args is a GeoJSON FeatureCollection
     if (args.type === 'FeatureCollection' && args.features) {
-      console.log('[Map Tools] Converting GeoJSON FeatureCollection to points format');
       return {
         points: args.features.map(feature => ({
           longitude: feature.geometry.coordinates[0],
@@ -927,7 +1426,6 @@ export class MapController {
 
     // If args has a geojson property
     if (args.geojson && args.geojson.type === 'FeatureCollection') {
-      console.log('[Map Tools] Converting nested GeoJSON to points format');
       return {
         points: args.geojson.features.map(feature => ({
           longitude: feature.geometry.coordinates[0],
@@ -944,7 +1442,6 @@ export class MapController {
 
     // If args has a features array directly
     if (args.features && Array.isArray(args.features)) {
-      console.log('[Map Tools] Converting features array to points format');
       return {
         points: args.features.map(feature => ({
           longitude: feature.geometry.coordinates[0],
@@ -960,7 +1457,6 @@ export class MapController {
     }
 
     // Return args as-is if we can't transform it
-    console.warn('[Map Tools] Unable to transform args, returning as-is. Args structure:', JSON.stringify(Object.keys(args)));
     return args;
   }
 
@@ -976,13 +1472,14 @@ export class MapController {
     this.markers.forEach(marker => marker.remove());
     this.markers = [];
 
+    // Clear star markers
+    this.clearStarMarkers();
+
     // Clear all routes
     this.clearAllRoutes();
 
     // Clear all isochrones
     this.clearAllIsochrones();
-
-    console.log('Map cleared');
   }
 
   /**
@@ -999,18 +1496,13 @@ export class MapController {
       const layerId = `${layerName}-layer`;
       const sourceId = `${layerName}-source`;
 
-
       if (this.map.getLayer(layerId)) {
         this.map.removeLayer(layerId);
-        console.log(`Removed layer: ${layerId}`);
       }
 
       if (this.map.getSource(sourceId)) {
         this.map.removeSource(sourceId);
-        console.log(`Removed source: ${sourceId}`);
       }
-
-      console.log(`Layer ${layerName} removed from map`);
     } catch (error) {
       console.error(`Failed to remove layer ${layerName}:`, error);
       throw error;
@@ -1098,6 +1590,29 @@ export class MapController {
             'line-color': lineColor,
             'line-width': 6,
             'line-opacity': 0.75
+          }
+        });
+      }
+
+      // Add arrow symbols layer to show direction
+      const arrowLayerId = `${layerName}-arrows`;
+      if (!this.map.getLayer(arrowLayerId)) {
+        this.map.addLayer({
+          id: arrowLayerId,
+          type: 'symbol',
+          source: layerName,
+          layout: {
+            'symbol-placement': 'line',
+            'text-field': '>',
+            'text-size': 24,
+            'text-rotation-alignment': 'map',
+            'text-keep-upright': false,
+            'symbol-spacing': 100
+          },
+          paint: {
+            'text-color': lineColor,
+            'text-halo-color': '#FFFFFF',
+            'text-halo-width': 2
           }
         });
       }
@@ -1321,8 +1836,8 @@ export class MapController {
   onMarkerClick(callback) {
     if (!this.map) return;
 
-    // Listen for clicks on the map
-    this.map.on('click', (e) => {
+    // Create click handler
+    const clickHandler = (e) => {
       try {
         // Query for features at the click point
         // The mapbox-map-tools library creates circle layers with dynamic names
@@ -1354,12 +1869,14 @@ export class MapController {
         }
       } catch (error) {
         // Silently handle queryRenderedFeatures errors (Mapbox internal issues)
-        console.debug('[Map] Error querying features on click:', error.message);
       }
-    });
+    };
+
+    // Add tracked click listener
+    this.addMapListener('click', clickHandler);
 
     // Change cursor on hover over POI features
-    this.map.on('mousemove', (e) => {
+    const mouseMoveHandler = (e) => {
       try {
         const features = this.map.queryRenderedFeatures(e.point);
         const poiFeatures = features.filter(f =>
@@ -1378,7 +1895,10 @@ export class MapController {
         // Reset cursor to default on error
         this.map.getCanvas().style.cursor = '';
       }
-    });
+    };
+
+    // Add tracked mousemove listener
+    this.addMapListener('mousemove', mouseMoveHandler);
   }
 
   /**
@@ -1747,10 +2267,9 @@ export class MapController {
 
   /**
    * Show user's current location on the map using Mapbox GeolocateControl
-   * @param {boolean} flyTo - Whether to fly to the user's location
    * @returns {Promise<{latitude: number, longitude: number}>}
    */
-  async showUserLocation(flyTo = true) {
+  async showUserLocation() {
     if (!this.map || !this.geolocateControl) {
       throw new Error('Map or GeolocateControl not initialized');
     }
@@ -1899,16 +2418,29 @@ export class MapController {
    */
   clearAllRoutes() {
     this.routes.forEach(route => {
-      // Remove layer and source
-      if (this.map.getLayer(route.layerName)) {
-        this.map.removeLayer(route.layerName);
+      // Handle new format (multi-waypoint routes with arrows)
+      if (route.layers && Array.isArray(route.layers)) {
+        route.layers.forEach(layerId => {
+          if (this.map.getLayer(layerId)) {
+            this.map.removeLayer(layerId);
+          }
+        });
+        if (route.source && this.map.getSource(route.source)) {
+          this.map.removeSource(route.source);
+        }
       }
-      if (this.map.getSource(route.layerName)) {
-        this.map.removeSource(route.layerName);
+      // Handle old format (point-to-point directions)
+      else if (route.layerName) {
+        if (this.map.getLayer(route.layerName)) {
+          this.map.removeLayer(route.layerName);
+        }
+        if (this.map.getSource(route.layerName)) {
+          this.map.removeSource(route.layerName);
+        }
+        // Remove markers
+        if (route.startMarker) route.startMarker.remove();
+        if (route.endMarker) route.endMarker.remove();
       }
-      // Remove markers
-      route.startMarker.remove();
-      route.endMarker.remove();
     });
     this.routes = [];
   }
@@ -1982,4 +2514,386 @@ export class MapController {
 
     this.map.setLanguage(language);
   }
+
+  /**
+   * Add tracked event listener to map
+   * @param {string} event - Event name
+   * @param {Function} handler - Event handler
+   */
+  addMapListener(event, handler) {
+    if (!this.map) return;
+    this.map.on(event, handler);
+    this.eventHandlers.push({ event, handler });
+  }
+
+  /**
+   * Add tracked DOM event listener
+   * @param {HTMLElement} element - DOM element
+   * @param {string} event - Event name
+   * @param {Function} handler - Event handler
+   */
+  addDOMListener(element, event, handler) {
+    if (!element) return;
+    element.addEventListener(event, handler);
+    this.domEventHandlers.push({ element, event, handler });
+  }
+
+  /**
+   * Comprehensive cleanup method to prevent memory leaks
+   * Call this when destroying the map or cleaning up the application
+   */
+  destroy() {
+    try {
+      // Remove all map event listeners
+      if (this.map && this.eventHandlers.length > 0) {
+        this.eventHandlers.forEach(({ event, handler }) => {
+          try {
+            this.map.off(event, handler);
+          } catch (e) {
+            console.warn(`[Map] Error removing event listener for ${event}:`, e);
+          }
+        });
+        this.eventHandlers = [];
+      }
+
+      // Remove all DOM event listeners
+      if (this.domEventHandlers.length > 0) {
+        this.domEventHandlers.forEach(({ element, event, handler }) => {
+          try {
+            element.removeEventListener(event, handler);
+          } catch (e) {
+            console.warn('[Map] Error removing DOM event listener:', e);
+          }
+        });
+        this.domEventHandlers = [];
+      }
+
+      // Clear all markers
+      this.clearAllMarkers();
+      this.clearStarMarkers();
+      this.clearAllRoutes();
+      this.clearAllIsochrones();
+
+      // Remove user location marker
+      if (this.userLocationMarker) {
+        this.userLocationMarker.remove();
+        this.userLocationMarker = null;
+      }
+
+      // Remove controls
+      if (this.map) {
+        if (this.languageControl) {
+          try {
+            this.map.removeControl(this.languageControl);
+          } catch (e) {
+            console.warn('[Map] Error removing language control:', e);
+          }
+          this.languageControl = null;
+        }
+
+        if (this.geolocateControl) {
+          try {
+            this.map.removeControl(this.geolocateControl);
+          } catch (e) {
+            console.warn('[Map] Error removing geolocate control:', e);
+          }
+          this.geolocateControl = null;
+        }
+      }
+
+      // Remove map instance
+      if (this.map) {
+        try {
+          this.map.remove();
+        } catch (e) {
+          console.warn('[Map] Error removing map:', e);
+        }
+        this.map = null;
+      }
+
+      // Clear references
+      this.mapTools = null;
+      this.app = null;
+    } catch (error) {
+      console.error('[Map] Error during cleanup:', error);
+    }
+  }
+
+  /**
+   * Clear all markers from the map
+   */
+  clearAllMarkers() {
+    if (this.markers.length > 0) {
+      this.markers.forEach(marker => {
+        try {
+          marker.remove();
+        } catch (e) {
+          console.warn('[Map] Error removing marker:', e);
+        }
+      });
+      this.markers = [];
+    }
+  }
+
+  /**
+   * Draw a route on the map with directional arrows
+   * @param {Array<{lng: number, lat: number}>} coordinates - Array of waypoints
+   * @param {Object} options - Route options
+   * @param {string} options.color - Route color (default: '#1976d2')
+   * @param {string} options.routeId - Optional custom route ID
+   * @param {string} options.profile - Routing profile: 'driving', 'walking', 'cycling' (default: 'walking')
+   * @returns {Promise<Object>} Route information
+   */
+  async drawRoute(coordinates, options = {}) {
+    const {
+      routeId = `route-${Date.now()}`,
+      profile = 'walking'
+    } = options;
+
+    // Color based on profile (matching get_directions color scheme)
+    const colors = {
+      driving: '#4264FB',
+      'driving-traffic': '#FF6B6B',
+      walking: '#4ECDC4',
+      cycling: '#95E77D'
+    };
+    const color = options.color || colors[profile] || colors.walking;
+
+    try {
+      if (!coordinates || coordinates.length < 2) {
+        throw new Error('At least 2 coordinates required for route');
+      }
+
+      // Format coordinates for Directions API
+      const coordString = coordinates.map(c => `${c.lng},${c.lat}`).join(';');
+      const url = `https://api.mapbox.com/directions/v5/mapbox/${profile}/${coordString}?` +
+        `geometries=geojson&overview=full&steps=false&language=ja&access_token=${mapboxgl.accessToken}`;
+
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Directions API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (!data.routes || data.routes.length === 0) {
+        throw new Error('No route found');
+      }
+
+      const route = data.routes[0];
+      const geometry = route.geometry;
+
+      // Remove existing route layers if they exist
+      if (this.map.getLayer(`${routeId}-line`)) {
+        this.map.removeLayer(`${routeId}-line`);
+      }
+      if (this.map.getLayer(`${routeId}-arrows`)) {
+        this.map.removeLayer(`${routeId}-arrows`);
+      }
+      if (this.map.getSource(routeId)) {
+        this.map.removeSource(routeId);
+      }
+
+      // Add route source
+      this.map.addSource(routeId, {
+        type: 'geojson',
+        data: {
+          type: 'Feature',
+          geometry: geometry
+        }
+      });
+
+      // Add route line layer
+      this.map.addLayer({
+        id: `${routeId}-line`,
+        type: 'line',
+        source: routeId,
+        paint: {
+          'line-color': color,
+          'line-width': 5,
+          'line-opacity': 0.8
+        }
+      });
+
+      // Add arrow symbols layer
+      this.map.addLayer({
+        id: `${routeId}-arrows`,
+        type: 'symbol',
+        source: routeId,
+        layout: {
+          'symbol-placement': 'line',
+          'text-field': '>',
+          'text-size': 24,
+          'text-rotation-alignment': 'map',
+          'text-keep-upright': false,
+          'symbol-spacing': 100
+        },
+        paint: {
+          'text-color': color,
+          'text-halo-color': '#FFFFFF',
+          'text-halo-width': 2
+        }
+      });
+
+      // Track route for cleanup
+      this.routes.push({
+        id: routeId,
+        layers: [`${routeId}-line`, `${routeId}-arrows`],
+        source: routeId
+      });
+
+      return {
+        routeId,
+        distance: route.distance,
+        duration: route.duration,
+        geometry
+      };
+
+    } catch (error) {
+      console.error('[Map] Error drawing route:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Add numbered markers to show visit order using symbol layer
+   * @param {Array<{lng: number, lat: number, label: string, name: string}>} locations - Locations with numbers/labels
+   * @param {Object} options - Marker options
+   * @param {string} options.color - Marker text color (default: '#1976d2')
+   * @param {string} options.layerId - Optional custom layer ID
+   * @returns {Object} Layer information
+   */
+  drawNumberedMarkers(locations, options = {}) {
+    const { color = '#1976d2', layerId = `numbered-markers-${Date.now()}` } = options;
+
+    try {
+      // Handle overlapping coordinates by adding small offsets
+      const markerOverlapCounter = {};
+      const features = locations.map((location, index) => {
+        const key = `${location.lng}_${location.lat}`;
+        if (!markerOverlapCounter[key]) markerOverlapCounter[key] = 0;
+        const offset = 0.00005 * markerOverlapCounter[key];
+        markerOverlapCounter[key] += 1;
+
+        return {
+          type: 'Feature',
+          geometry: {
+            type: 'Point',
+            coordinates: [location.lng + offset, location.lat + offset]
+          },
+          properties: {
+            label: location.label || (index + 1).toString(),
+            name: location.name || '',
+            color: color
+          }
+        };
+      });
+
+      const geojson = {
+        type: 'FeatureCollection',
+        features: features
+      };
+
+      // Remove existing layer if it exists
+      if (this.map.getLayer(layerId)) {
+        this.map.removeLayer(layerId);
+      }
+      if (this.map.getLayer(`${layerId}-bg`)) {
+        this.map.removeLayer(`${layerId}-bg`);
+      }
+      if (this.map.getSource(layerId)) {
+        this.map.removeSource(layerId);
+      }
+
+      // Add source
+      this.map.addSource(layerId, {
+        type: 'geojson',
+        data: geojson
+      });
+
+      // Add background circle layer (offset to upper-right)
+      this.map.addLayer({
+        id: `${layerId}-bg`,
+        type: 'circle',
+        source: layerId,
+        paint: {
+          'circle-radius': 16,
+          'circle-color': ['get', 'color'],
+          'circle-stroke-width': 2,
+          'circle-stroke-color': '#ffffff',
+          'circle-translate': [24, -24]  // Offset to upper-right (x: right, y: up)
+        }
+      });
+
+      // Add text layer for numbers (offset to upper-right)
+      this.map.addLayer({
+        id: layerId,
+        type: 'symbol',
+        source: layerId,
+        layout: {
+          'text-field': ['get', 'label'],
+          'text-font': ['DIN Pro Bold', 'Arial Unicode MS Bold'],
+          'text-size': 14,
+          'text-allow-overlap': true,
+          'text-ignore-placement': true,
+          'text-offset': [1.5, -1.5]  // Offset to upper-right in ems
+        },
+        paint: {
+          'text-color': '#ffffff',
+          'text-halo-color': 'rgba(0, 0, 0, 0.3)',
+          'text-halo-width': 1
+        }
+      });
+
+      // Move both layers to the very top so they're never hidden
+      this.map.moveLayer(`${layerId}-bg`);
+      this.map.moveLayer(layerId);
+
+      // Add hover popup
+      const popup = new mapboxgl.Popup({
+        closeButton: false,
+        closeOnClick: false,
+        offset: [0, -20]
+      });
+
+      const mouseEnterHandler = (e) => {
+        if (e.features.length > 0) {
+          this.map.getCanvas().style.cursor = 'pointer';
+          const feature = e.features[0];
+          const name = feature.properties.name;
+          if (name) {
+            popup
+              .setLngLat(e.features[0].geometry.coordinates)
+              .setHTML(`<div style="padding: 8px; font-weight: bold;">${name}</div>`)
+              .addTo(this.map);
+          }
+        }
+      };
+
+      const mouseLeaveHandler = () => {
+        this.map.getCanvas().style.cursor = '';
+        popup.remove();
+      };
+
+      // Add tracked event listeners for both layers
+      this.addMapListener(`${layerId}-bg`, 'mouseenter', mouseEnterHandler);
+      this.addMapListener(`${layerId}-bg`, 'mouseleave', mouseLeaveHandler);
+      this.addMapListener(layerId, 'mouseenter', mouseEnterHandler);
+      this.addMapListener(layerId, 'mouseleave', mouseLeaveHandler);
+
+      // Track for cleanup
+      this.routes.push({
+        id: layerId,
+        layers: [`${layerId}-bg`, layerId],
+        source: layerId,
+        type: 'numbered-markers'
+      });
+
+      return { layerId, featureCount: locations.length };
+
+    } catch (error) {
+      console.error('[Map] Error adding numbered markers:', error);
+      throw error;
+    }
+  }
+
 }

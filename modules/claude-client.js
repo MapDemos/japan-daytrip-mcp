@@ -5,6 +5,8 @@
  * - Map Tools MCP (visualization library)
  */
 
+import { errorLogger } from './error-logger.js';
+
 export class ClaudeClient {
   constructor(apiKey, rurubuMCP, mapController, i18n, config, app = null, onRurubuData = null) {
     this.apiKey = apiKey;
@@ -15,19 +17,33 @@ export class ClaudeClient {
     this.app = app; // Reference to main app for search history management
     this.onRurubuData = onRurubuData; // Callback to store full Rurubu POI data
     this.conversationHistory = [];
+
+    // Token caching - separate Map to avoid polluting message objects sent to API
+    this.messageTokenCache = new WeakMap(); // WeakMap allows garbage collection of old messages
+    this._cachedSystemPromptTokens = undefined;
+    this._lastSystemPrompt = undefined;
+
+    // Context tracking
+    this.userLocation = null; // User's current location
+    this.mapView = null; // Current map view (center, zoom, bounds)
+
     this.systemPrompt = this.buildSystemPrompt();
 
     // Token management
-    this.MAX_TOKENS = 200000;
-    this.PRUNE_THRESHOLD = 140000; // Start pruning at 70% capacity (60k buffer for tool responses)
-    this.WARNING_THRESHOLD = 100000; // Show warning at 50% capacity
+    this.MAX_TOKENS = config.MAX_CONTEXT_TOKENS || 200000;
+    this.PRUNE_THRESHOLD = config.PRUNE_THRESHOLD_TOKENS || 160000; // Start pruning at 80% capacity
+    this.WARNING_THRESHOLD = config.WARNING_THRESHOLD_TOKENS || 140000; // Show warning at 70% capacity
     this.conversationSummary = null; // Store summary of pruned messages
   }
 
   /**
    * Build the system prompt for Claude
    */
-  buildSystemPrompt(userLocation = null) {
+  buildSystemPrompt(userLocation = null, mapView = null) {
+    // Get current language
+    const currentLang = this.i18n.getCurrentLanguage();
+    const langName = currentLang === 'ja' ? 'Japanese' : 'English';
+
     let locationContext = '';
     if (userLocation) {
       const coords = `${userLocation.latitude.toFixed(6)}, ${userLocation.longitude.toFixed(6)}`;
@@ -40,7 +56,96 @@ export class ClaudeClient {
       }
     }
 
-    return `You are a knowledgeable and friendly Japan travel assistant. You help users discover and explore places across Japan, from bustling Tokyo neighborhoods to historic Kyoto temples.${locationContext}
+    let mapViewContext = '';
+    if (mapView) {
+      const { center, zoom, bounds, placeName, name } = mapView;
+      const coords = `${center.lat.toFixed(4)}°N, ${center.lng.toFixed(4)}°E`;
+
+      if (placeName || name) {
+        const location = placeName || name;
+        mapViewContext = `🗺️ CURRENT MAP VIEW LOCATION: ${location}
+
+📍 MAP CENTER COORDINATES: ${coords}
+📏 ZOOM LEVEL: ${zoom.toFixed(1)}
+🗺️ VISIBLE AREA: ${bounds.south.toFixed(2)}°N to ${bounds.north.toFixed(2)}°N, ${bounds.west.toFixed(2)}°E to ${bounds.east.toFixed(2)}°E
+
+⚠️⚠️⚠️ CRITICAL - READ THIS FIRST BEFORE RESPONDING ⚠️⚠️⚠️
+
+The map is currently centered on: ${location}
+
+When the user asks "where is this?" or "what is this place?":
+- They are asking about the MAP VIEW location: ${location}
+- They are NOT asking about POI markers displayed on the map
+- POI markers may be from previous searches in OTHER locations
+- IGNORE the location of POI markers when answering "where is this?"
+- ONLY respond with the MAP VIEW location: ${location}
+
+When the user asks "search here" or "cafes here":
+- "here" means the CURRENT map view: ${location}
+- NOT any previous search location
+- NOT the location of currently displayed POI markers
+- Search in: ${location}
+
+When the user asks "what's here?" or "tell me about these places":
+- First call get_poi_summary tool to see what POIs are available
+- Use filters if needed to narrow results
+- Then describe the POIs found
+
+ALWAYS use ${location} as the current location, even if there are POI markers from other cities visible on the map.
+
+`;
+      } else {
+        mapViewContext = `🗺️ CURRENT MAP VIEW LOCATION: ${coords}
+
+📍 MAP CENTER COORDINATES: ${coords}
+📏 ZOOM LEVEL: ${zoom.toFixed(1)}
+🗺️ VISIBLE AREA: ${bounds.south.toFixed(2)}°N to ${bounds.north.toFixed(2)}°N, ${bounds.west.toFixed(2)}°E to ${bounds.east.toFixed(2)}°E
+
+⚠️⚠️⚠️ CRITICAL - READ THIS FIRST BEFORE RESPONDING ⚠️⚠️⚠️
+
+The map is currently centered on: ${coords}
+
+When the user asks "where is this?":
+- They are asking about the MAP VIEW location: ${coords}
+- They are NOT asking about POI markers displayed on the map
+- IGNORE the location of POI markers when answering "where is this?"
+- ONLY respond with the MAP VIEW coordinates: ${coords}
+
+When the user asks "search here" or "cafes here":
+- "here" means the CURRENT map view bounds
+- NOT any previous search location
+- Search using bounds: ${bounds.south.toFixed(2)}°N to ${bounds.north.toFixed(2)}°N, ${bounds.west.toFixed(2)}°E to ${bounds.east.toFixed(2)}°E
+
+When the user asks "what's here?" or "tell me about these places":
+- First call get_poi_summary tool to see what POIs are available
+- Use filters if needed to narrow results
+- Then describe the POIs found
+
+ALWAYS use the current map view location above, even if there are POI markers from other cities visible on the map.
+
+`;
+      }
+    }
+
+    return `${mapViewContext}You are a knowledgeable and friendly Japan travel assistant. You help users discover and explore places across Japan, from bustling Tokyo neighborhoods to historic Kyoto temples.${locationContext}
+
+COMPRESSED DATA FORMAT:
+- POI data uses ultra-compact pipe-delimited format with string dictionary to save tokens
+- Pipe-delimited format: {t:'p', dict:"レストラン|カフェ|渋谷区|...", f:"id|name|catIdx|lon|lat|rank|time|price|addrIdx|genreIdx|pics\nid2|name2|..."}
+  * t='p' means pipe-delimited format
+  * dict is a pipe-delimited string of unique strings (categories, addresses, genre names)
+  * f is a string with POIs separated by newlines, fields separated by pipes (|)
+  * Repeated strings are replaced with dictionary indices (numbers or empty string)
+  * To get the actual string: split dict by pipes, then use index - for example, if catIdx=0, category is dict.split('|')[0]
+  * Coordinates have 6 decimal precision and can be used directly
+  * Field order (pipe-separated): id|name|categoryIndex|longitude|latitude|rank|time|price|addressIndex|genreIndex|photo_count
+  * Indices for category (field 2), address (field 8), genre (field 9) are dictionary indices (empty if null)
+  * Escaped characters: \| = pipe in data, \n = newline in data (actual newlines separate POIs)
+  * Example: dict="レストラン|カフェ|渋谷区|港区", f="123|Tokyo Tower|0|139.745433|35.658581|5|9:00-22:00|¥1200|2|1|5"
+    - This means: id=123, name="Tokyo Tower", category=dict[0]="レストラン", lng=139.745433, lat=35.658581, rank=5, time="9:00-22:00", price="¥1200", address=dict[2]="渋谷区", genre=dict[1]="カフェ", photos=5
+  * To parse: dictArray=dict.split('|'), then split f by newlines to get POIs, then split each line by pipes to get fields
+- Truncated summaries use abbreviated keys: sid=search_id, cat=category, loc=location, jis=jis_code, cnt=count, msg=message
+- All JSON is minified (no whitespace) to minimize token usage
 
 TOOL USAGE STRATEGY:
 
@@ -48,25 +153,100 @@ TOOL USAGE STRATEGY:
 - Use search_rurubu_pois (provides rich data: photos, prices, hours, Japanese details)
 - Automatically handles location → JIS code conversion
 
-**For visualization:**
-- Rurubu POI search results are AUTOMATICALLY displayed on the map
+**For POIs not in Rurubu database:**
+- ⚠️ NEVER mention Google, Google Maps, or suggest external search engines
+- ⚠️ NEVER apologize that Rurubu doesn't have the data - just use search_location instead!
+- If search_rurubu_pois returns 0 results or category not available:
+  1. Immediately call search_location with the location query (translate to Japanese if needed)
+  2. Call add_points_to_map to display the results on the map
+  3. Respond to the user with what you found
+- search_location can find: hospitals, stations, landmarks, addresses, businesses, parks, hotels, etc.
+- Example workflow:
+  * User asks for "横浜市中区の病院"
+  * search_rurubu_pois returns 0 results
+  * Immediately call search_location("横浜市中区 病院")
+  * Call add_points_to_map with results
+  * Tell user you found X hospitals in the area
+- DO NOT tell the user that Rurubu doesn't have the data - they don't care about Rurubu vs Searchbox
+
+**For visualization and POI context:**
+- Rurubu POI search results are AUTOMATICALLY displayed on the map as markers
 - Each search is stored in history with a unique ID (search_1, search_2, etc.)
 - The first search clears the map; subsequent searches are added as separate layers
 - DO NOT call add_points_to_map, fit_map_to_bounds, or pan_map_to_location after Rurubu searches
-- You only need to provide a friendly response describing the results
+- After a search, conversation history ONLY contains: count, category, location (no POI details)
+
+⚠️⚠️⚠️ CRITICAL REQUIREMENTS - READ THIS BEFORE EVERY RESPONSE ⚠️⚠️⚠️
+
+**RULE 1: ONLY recommend POIs from search results - NEVER use your general knowledge**
+- ❌ WRONG: User asks for "横浜のレストラン" → You recommend "横浜中華街" from your knowledge
+- ✅ CORRECT: User asks for "横浜のレストラン" → Search → get_poi_summary → Recommend ONLY from those results
+- DO NOT mention POI names that weren't in the search results
+- DO NOT use your training data knowledge about restaurants, temples, shops, etc.
+- If search returns 0 results, suggest a different search or location - don't make up POIs
+- ONLY mention POIs that exist in the current search results (verify with get_poi_summary)
+
+**RULE 2: ALWAYS highlight EVERY POI you mention by name**
+- This is MANDATORY, not optional
+- If you mention "TASTE THE WORLD 外苑前店" in your response → MUST highlight it with a star
+- If you recommend 5 restaurants → MUST highlight all 5 with stars
+- If you list "top 10 places" → MUST highlight all 10 with stars
+- If you say "おすすめは○○です" → MUST highlight ○○ with a star
+- NO EXCEPTIONS: Any POI name in your response text = must be highlighted
+
+WORKFLOW (DO THIS EVERY TIME):
+1. Search for POIs (automatically displayed on map)
+2. Call get_poi_summary to get ALL POI details with coordinates
+3. Select which POIs from the search results you will mention by name
+4. Call highlight_recommended_pois with those POI names and coordinates
+5. THEN write your response mentioning ONLY those POIs
+
+WRONG (recommending from general knowledge):
+User: "横浜市中区のおすすめのレストラン"
+Assistant: Searches → Responds: "横浜中華街がおすすめです" ❌ NOT FROM SEARCH RESULTS!
+
+WRONG (missing highlight call):
+User: "横浜市中区のおすすめのレストラン"
+Assistant: Searches → get_poi_summary → Responds: "おすすめは「中華街 大珍樓」です..." ❌ NO STAR!
+
+CORRECT:
+User: "横浜市中区のおすすめのレストラン"
+Assistant: Searches → get_poi_summary → highlight_recommended_pois([{name: "中華街 大珍樓", coordinates: [...]}]) → Responds ✅ FROM RESULTS + HAS STAR!
+
+**To access POI details after a search:**
+- **For ranking, comparing, filtering, or listing POIs** (e.g., "rank these", "which is cheapest", "show open after 9pm", "what's here?"):
+  * Use get_poi_summary tool - returns lightweight list (just id, name, category, rating, price, time, coordinates)
+  * Supports filters: min_rating, search_text, open_after, sort_by, limit
+  * Token-efficient: returns only essential fields for ALL stored POIs
+  * Returns ALL POIs across all searches - use filters to narrow down results
+- **For detailed info on specific POIs**:
+  * Use get_poi_details tool - returns full details (summary, photos, etc.) for one POI at a time
 
 **For drawing routes and directions:**
 - ALWAYS use the get_directions tool when users want routes, directions, or to navigate between locations
 - DO NOT use add_route_to_map - it is deprecated and will cause errors
-- WORKFLOW: First use search_location to get coordinates, then pass coordinates to get_directions
+
+⚠️ CRITICAL COORDINATE RULE:
+- If POIs are already displayed on the map (from a search), NEVER call search_location for them
+- ALWAYS use get_poi_summary to get exact Rurubu coordinates for POIs on the map
+- Rurubu POI coordinates ≠ Searchbox coordinates - they WILL be different!
+- Mixing different coordinate sources will cause stars and route waypoints to misalign
+
+WORKFLOW for routes between POIs:
+  1. Call get_poi_summary to get POI details with coordinates
+  2. Find the POIs you want to route between by name
+  3. Extract their coordinates from get_poi_summary results
+  4. Pass array of coordinates to get_directions
+  5. DO NOT call search_location for these POIs!
+
+WORKFLOW for routes between general locations (stations, landmarks NOT on map as POIs):
   1. TRANSLATE English location names to Japanese before calling search_location:
-     - "Tokyo Tower" → "東京タワー"
-     - "Shibuya Station" → "渋谷駅"
-     - "Senso-ji Temple" → "浅草寺"
-     - "Kyoto Station" → "京都駅"
+     - "Tokyo Tower" → "東京タワー", "Shibuya Station" → "渋谷駅"
+     - "Senso-ji Temple" → "浅草寺", "Kyoto Station" → "京都駅"
   2. Call search_location with Japanese query for each destination/waypoint
   3. Extract coordinates from search_location results (use first result)
   4. Pass array of coordinates to get_directions
+
 - get_directions automatically displays the route on the map with proper road routing
 - Supports multiple routing profiles: driving (default), walking, cycling, driving-traffic
 - Returns distance, duration, and turn-by-turn instructions
@@ -77,6 +257,47 @@ TOOL USAGE STRATEGY:
 - hide_search_results: Remove a search from the map (keeps in history)
 - clear_all_searches: Clear all searches from history and map
 - Users can ask to "show previous results", "hide the temples", "show search_2", etc.
+
+**For itinerary planning and day trips:**
+⚠️ CRITICAL: NEVER use general knowledge for itineraries - ONLY use POIs from search results!
+
+- MANDATORY WORKFLOW for creating ANY itinerary or day trip plan:
+  1. ⚠️ DO MULTIPLE SEARCHES for different POI types (you need variety for a good plan):
+     - Search "see" category (temples, parks, museums)
+     - Search "eat" category (restaurants for lunch/dinner)
+     - Search "cafe" category (cafes for breaks)
+     - Search "buy" category (shops) if relevant
+     - DO NOT skip searches and use your knowledge instead!
+  2. Call get_poi_summary to see ALL POIs from ALL searches
+  3. Select 3-8 POIs ONLY from the search results (verify each one is in the results)
+  4. Extract coordinates for each selected POI in visit order
+  5. Call draw_itinerary_route with waypoints array and profile (walking/cycling/driving)
+  6. Call add_visit_order_markers with locations array AND the color from draw_itinerary_route result
+  7. Call highlight_recommended_pois to add stars to ALL selected POIs
+  8. Write your response mentioning ONLY the POIs you searched for and selected
+
+- WRONG WORKFLOW (DO NOT DO THIS):
+  * User: "京都の日帰りプランを作って"
+  * Assistant: Uses general knowledge → Mentions "金閣寺, 清水寺, ..." ❌ NOT FROM SEARCHES!
+
+- CORRECT WORKFLOW:
+  * User: "京都の日帰りプランを作って"
+  * Assistant: search_rurubu_pois(category="see", location="Kyoto") →
+               search_rurubu_pois(category="eat", location="Kyoto") →
+               search_rurubu_pois(category="cafe", location="Kyoto") →
+               get_poi_summary() →
+               Select POIs ONLY from these results →
+               draw_itinerary_route + add_visit_order_markers + highlight_recommended_pois →
+               Write plan with ONLY selected POIs ✅
+
+- EXAMPLES:
+  * "渋谷の日帰りプランを計画して" → search(see) + search(eat) + search(cafe) → get_poi_summary → select from results → route + numbers + stars → write
+  * "京都のお寺を巡るルート" → search(see) + search(eat) → get_poi_summary → select temples from results → route + numbers + stars → write
+  * "plan a day trip in Asakusa" → search(see) + search(eat) + search(cafe) → get_poi_summary → select from results → route + numbers + stars → write
+- Default profile: "walking" (best for city exploration)
+- Route shows arrows indicating direction, numbers show visit order
+- Route color is determined by profile: walking=#4ECDC4 (teal), driving=#4264FB (blue), cycling=#95E77D (green)
+- ⚠️ Numbered markers MUST use the same color as the route for visual consistency
 
 **For route management:**
 - hide_all_routes: Hide all routes from the map
@@ -102,13 +323,13 @@ IMPORTANT CONSTRAINTS:
 - For Nagoya: Naka-ku, Nakamura-ku, Atsuta-ku
 
 **Response style:**
-- Respond in English BUT keep ALL Rurubu data in its original Japanese:
+- Respond in ${langName} BUT keep ALL Rurubu data in its original Japanese:
   * POI names: Keep in Japanese (e.g., "ひるがお 本店" NOT "Hirugao Honten")
   * Addresses: Keep in Japanese (e.g., "東京都世田谷区野沢2-1-2")
   * Descriptions/summaries: Keep in Japanese exactly as provided by Rurubu
   * NEVER translate or romanize Japanese text from Rurubu
 - Be conversational and enthusiastic about Japan
-- Provide brief context in English but preserve Japanese details
+- Provide brief context in ${langName} but preserve Japanese details
 - Mention the number of results found
 - The tool result message will confirm that results are displayed on the map
 
@@ -120,8 +341,16 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
    * Update user location and rebuild system prompt
    */
   updateUserLocation(userLocation) {
-    this.systemPrompt = this.buildSystemPrompt(userLocation);
-    console.log('[Claude] User location updated in context');
+    this.userLocation = userLocation;
+    this.systemPrompt = this.buildSystemPrompt(this.userLocation, this.mapView);
+  }
+
+  /**
+   * Update map view and rebuild system prompt
+   */
+  updateMapView(mapView) {
+    this.mapView = mapView;
+    this.systemPrompt = this.buildSystemPrompt(this.userLocation, this.mapView);
   }
 
   /**
@@ -139,13 +368,27 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
       });
 
       // Check token usage and prune if necessary
-      const tokenUsage = this.getTokenUsage();
-
-      if (tokenUsage.needsPruning) {
-        console.log('[Claude] Token limit approaching, pruning conversation...');
-        await this.pruneConversation();
-        const newUsage = this.getTokenUsage();
-      }
+      // DISABLED: Auto-pruning disabled - will wait for Claude API to return 400 error instead
+      // const tokenUsage = this.getTokenUsage();
+      //
+      // if (tokenUsage.needsPruning) {
+      //   if (onProgress) {
+      //     onProgress(this.i18n.t('status.optimizing'));
+      //   }
+      //
+      //   const pruneResult = await this.pruneConversation();
+      //
+      //   if (pruneResult.pruned) {
+      //     console.log(`[Claude] Auto-pruned ${pruneResult.messagesPruned} messages, saved ${pruneResult.tokensSaved} tokens`);
+      //     console.log(`[Claude] New token count: ${pruneResult.newTotal} (${Math.round((pruneResult.newTotal / this.MAX_TOKENS) * 100)}%)`);
+      //
+      //     // Optional: Add a subtle notification that pruning occurred
+      //     // This helps users understand why older messages might not be in context
+      //     if (onProgress) {
+      //       onProgress(this.i18n.t('status.processing'));
+      //     }
+      //   }
+      // }
 
       // Collect tools from available sources
       const tools = [
@@ -171,22 +414,69 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
         onProgress(this.i18n.t('status.processing'));
       }
 
-      // Call Claude API via proxy server to avoid CORS issues
+      // Call Claude API via proxy server with retry logic
       const apiEndpoint = this.config.CLAUDE_API_PROXY || 'http://localhost:3001/api/claude';
-      const response = await fetch(apiEndpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(requestBody)
-      });
+      const MAX_RETRIES = 3;
+      const TIMEOUT_MS = 30000;
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Claude API Error: ${response.status} - ${errorText}`);
+      let lastError;
+      let result;
+
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          // Create abort controller for timeout
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+          const response = await fetch(apiEndpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(requestBody),
+            signal: controller.signal
+          });
+
+          clearTimeout(timeoutId);
+
+          if (!response.ok) {
+            // Retry on 5xx errors or 429 (rate limit)
+            if ((response.status >= 500 || response.status === 429) && attempt < MAX_RETRIES) {
+              const waitTime = Math.min(1000 * Math.pow(2, attempt - 1), 5000); // Exponential backoff, max 5s
+              await new Promise(resolve => setTimeout(resolve, waitTime));
+              continue;
+            }
+
+            const errorText = await response.text();
+            throw new Error(`Claude API Error: ${response.status} - ${errorText}`);
+          }
+
+          result = await response.json();
+
+          // Success - break retry loop
+          lastError = null;
+          break;
+        } catch (error) {
+          lastError = error;
+
+          // If it's an abort error (timeout) or network error, retry
+          if ((error.name === 'AbortError' || error.message.includes('fetch')) && attempt < MAX_RETRIES) {
+            const waitTime = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+            continue;
+          }
+
+          // If max retries reached, throw the error
+          if (attempt === MAX_RETRIES) {
+            throw error;
+          }
+        }
       }
 
-      const result = await response.json();
+      // If we still have an error after all retries, throw it
+      if (lastError) {
+        throw lastError;
+      }
 
       // Check if we got streaming chunks
       if (result.chunks && Array.isArray(result.chunks)) {
@@ -198,6 +488,18 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
 
     } catch (error) {
       console.error('[Claude] Error:', error);
+
+      // Check if it's a token overflow error - re-throw to show error modal
+      const errorMsg = error?.message || String(error) || '';
+      const isTokenError = errorMsg.includes('400') ||
+                          errorMsg.includes('token') ||
+                          errorMsg.includes('too large') ||
+                          errorMsg.includes('context length') ||
+                          errorMsg.includes('invalid_request_error');
+
+      if (isTokenError) {
+        throw error; // Re-throw to trigger error modal
+      }
 
       // Rollback conversation on error
       this.conversationHistory = conversationBackup;
@@ -214,8 +516,6 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
    * Process streaming response chunks incrementally
    */
   async processStreamingResponse(chunks, onProgress = null, onStreamUpdate = null) {
-    console.log(`[Claude] Processing ${chunks.length} streaming chunks`);
-
     let assistantMessage = {
       role: 'assistant',
       content: []
@@ -325,46 +625,46 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
 
     // If we have tool calls, execute them
     if (toolUses.length > 0) {
+      if (onProgress) {
+        onProgress(this.i18n.t('status.callingRurubu'));
+      }
+
+      // Collect all tool calls first
+      const toolCalls = assistantMessage.content
+        .filter(content => content.type === 'tool_use')
+        .map(content => {
+          // Parse tool input if it's a string (from streaming chunks)
+          let toolInput = content.input;
+          if (typeof toolInput === 'string') {
+            try {
+              toolInput = JSON.parse(toolInput);
+            } catch (e) {
+              // Failed to parse tool input
+            }
+          }
+          return { content, toolInput };
+        });
+
+      // Execute all tools in parallel
+      const toolExecutionPromises = toolCalls.map(({ content, toolInput }) =>
+        this.executeTool(content.name, toolInput)
+      );
+
+      const toolExecutionResults = await Promise.all(toolExecutionPromises);
+
+      // Process results
       let toolResults = [];
       let truncatedToolResults = [];
 
-      for (let i = 0; i < assistantMessage.content.length; i++) {
-        const content = assistantMessage.content[i];
-        if (content.type !== 'tool_use') continue;
+      toolCalls.forEach(({ content }, index) => {
+        const toolResult = toolExecutionResults[index];
 
-        if (onProgress) {
-          const toolName = content.name;
-          if (toolName.startsWith('search_rurubu')) {
-            onProgress(this.i18n.t('status.callingRurubu'));
-          } else if (toolName.includes('map') || toolName.includes('route')) {
-            onProgress(this.i18n.t('status.visualizing'));
-          } else {
-            onProgress(this.i18n.t('status.callingMapbox'));
-          }
-        }
-
-        // Get the accumulated tool input from the content block
-        let toolInput = content.input;
-
-        // Parse tool input if it's a string (from streaming chunks)
-        if (typeof toolInput === 'string') {
-          try {
-            toolInput = JSON.parse(toolInput);
-            console.log(`[Claude] Parsed tool input for ${content.name}:`, toolInput);
-          } catch (e) {
-            console.error(`[Claude] Failed to parse tool input for ${content.name}:`, e);
-            console.error(`[Claude] Raw input was:`, toolInput);
-          }
-        }
-
-        // Execute the tool
-        const toolResult = await this.executeTool(content.name, toolInput);
-
-        // Keep full result for immediate follow-up
+        // Compress GeoJSON in tool result if it's a POI search (for follow-up request)
+        const compressedResult = this.compressToolResult(content.name, toolResult);
         toolResults.push({
           type: 'tool_result',
           tool_use_id: content.id,
-          content: toolResult.content
+          content: compressedResult.content
         });
 
         // Also keep truncated version for conversation history
@@ -374,7 +674,7 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
           tool_use_id: content.id,
           content: truncatedResult.content
         });
-      }
+      });
 
       // Add TRUNCATED tool results to conversation history (to reduce payload for future requests)
       this.conversationHistory.push({
@@ -394,6 +694,19 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
       } catch (error) {
         console.error('[Claude] Follow-up request failed:', error);
 
+        // Check if it's a token overflow error - re-throw to show error modal
+        const errorMsg = error?.message || String(error) || '';
+        const isTokenError = errorMsg.includes('400') ||
+                            errorMsg.includes('token') ||
+                            errorMsg.includes('too large') ||
+                            errorMsg.includes('context length') ||
+                            errorMsg.includes('invalid_request_error');
+
+        if (isTokenError) {
+          throw error; // Re-throw to trigger error modal
+        }
+
+        // For other errors, return partial response
         return {
           text: accumulatedText || 'I used some tools but encountered an error.',
           toolsUsed: toolResults.map(r => r.tool_use_id)
@@ -418,39 +731,52 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
     };
 
     let hasToolUse = false;
+
+    // Separate text and tool use blocks
+    const textBlocks = [];
+    const toolUseBlocks = [];
+
+    for (const content of claudeResponse.content) {
+      if (content.type === 'text') {
+        textBlocks.push(content);
+      } else if (content.type === 'tool_use') {
+        hasToolUse = true;
+        toolUseBlocks.push(content);
+      }
+    }
+
+    // Add text blocks to assistant message
+    assistantMessage.content.push(...textBlocks);
+
+    // Execute all tool calls in parallel
     let toolResults = [];
     let truncatedToolResults = [];
 
-    // Process each content block
-    for (const content of claudeResponse.content) {
-      if (content.type === 'text') {
-        assistantMessage.content.push(content);
+    if (hasToolUse && toolUseBlocks.length > 0) {
+      if (onProgress) {
+        onProgress(this.i18n.t('status.callingRurubu'));
+      }
 
-      } else if (content.type === 'tool_use') {
-        hasToolUse = true;
+      // Execute all tools in parallel
+      const toolExecutionPromises = toolUseBlocks.map(content =>
+        this.executeTool(content.name, content.input)
+      );
 
-        if (onProgress) {
-          const toolName = content.name;
-          if (toolName.startsWith('search_rurubu')) {
-            onProgress(this.i18n.t('status.callingRurubu'));
-          } else if (toolName.includes('map') || toolName.includes('route')) {
-            onProgress(this.i18n.t('status.visualizing'));
-          } else {
-            onProgress(this.i18n.t('status.callingMapbox'));
-          }
-        }
+      const toolExecutionResults = await Promise.all(toolExecutionPromises);
 
-        // Execute the tool
-        const toolResult = await this.executeTool(content.name, content.input);
+      // Process results
+      toolUseBlocks.forEach((content, index) => {
+        const toolResult = toolExecutionResults[index];
 
         // Add tool use to assistant message
         assistantMessage.content.push(content);
 
-        // Keep full result for immediate follow-up
+        // Compress GeoJSON in tool result if it's a POI search (for follow-up request)
+        const compressedResult = this.compressToolResult(content.name, toolResult);
         toolResults.push({
           type: 'tool_result',
           tool_use_id: content.id,
-          content: toolResult.content
+          content: compressedResult.content
         });
 
         // Also keep truncated version for conversation history
@@ -460,7 +786,7 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
           tool_use_id: content.id,
           content: truncatedResult.content
         });
-      }
+      });
     }
 
     // Add assistant message to history
@@ -486,7 +812,19 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
       } catch (error) {
         console.error('[Claude] Follow-up request failed:', error);
 
-        // Return partial response
+        // Check if it's a token overflow error - re-throw to show error modal
+        const errorMsg = error?.message || String(error) || '';
+        const isTokenError = errorMsg.includes('400') ||
+                            errorMsg.includes('token') ||
+                            errorMsg.includes('too large') ||
+                            errorMsg.includes('context length') ||
+                            errorMsg.includes('invalid_request_error');
+
+        if (isTokenError) {
+          throw error; // Re-throw to trigger error modal
+        }
+
+        // For other errors, return partial response
         return {
           text: assistantMessage.content.find(c => c.type === 'text')?.text ||
             'I used some tools but encountered an error processing the results.',
@@ -513,23 +851,67 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
       ...(this.app ? this.app.getSearchHistoryTools() : [])
     ];
 
+    // Check token usage and prune if necessary before follow-up
+    // DISABLED: Auto-pruning disabled - will wait for Claude API to return 400 error instead
+    // const tokenUsage = this.getTokenUsage();
+    //
+    // if (tokenUsage.needsPruning) {
+    //   await this.pruneConversation();
+    // }
+
     // If override tool results provided, use conversation history with full results temporarily
     let messages = this.conversationHistory;
     if (overrideToolResults && overrideToolResults.length > 0) {
-      console.log('[Claude] Applying full tool results override:', overrideToolResults.length, 'results');
-      // Clone conversation history and replace last message with full tool results
+      // Clone conversation history and add/replace tool results
       messages = [...this.conversationHistory];
       if (messages.length > 0 && messages[messages.length - 1].role === 'user') {
-        console.log('[Claude] Replacing last user message with full results');
+        // Replace existing user message (update with uncompressed results)
         messages[messages.length - 1] = {
           role: 'user',
           content: overrideToolResults
         };
       } else {
-        console.warn('[Claude] Last message is not user role, cannot replace');
+        // Add new user message with tool results (last message was assistant with tool_use)
+        messages.push({
+          role: 'user',
+          content: overrideToolResults
+        });
       }
-    } else {
-      console.log('[Claude] No override tool results provided');
+    }
+
+    // Validate message structure before sending
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+        const toolUseBlocks = msg.content.filter(b => b.type === 'tool_use');
+        if (toolUseBlocks.length > 0) {
+          // Next message must be user with tool_result
+          const nextMsg = messages[i + 1];
+          if (!nextMsg || nextMsg.role !== 'user') {
+            console.error('[Claude] VALIDATION ERROR: tool_use without following user message', {
+              messageIndex: i,
+              toolUseIds: toolUseBlocks.map(b => b.id),
+              nextMessage: nextMsg
+            });
+            console.error('[Claude] Full messages array:', JSON.stringify(messages, null, 2));
+          } else if (Array.isArray(nextMsg.content)) {
+            const toolResultIds = nextMsg.content
+              .filter(b => b.type === 'tool_result')
+              .map(b => b.tool_use_id);
+            const toolUseIds = toolUseBlocks.map(b => b.id);
+            const missingIds = toolUseIds.filter(id => !toolResultIds.includes(id));
+            if (missingIds.length > 0) {
+              console.error('[Claude] VALIDATION ERROR: tool_use without matching tool_result', {
+                messageIndex: i,
+                missingToolUseIds: missingIds,
+                toolUseIds,
+                toolResultIds
+              });
+              console.error('[Claude] Full messages array:', JSON.stringify(messages, null, 2));
+            }
+          }
+        }
+      }
     }
 
     const requestBody = {
@@ -564,6 +946,115 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
   }
 
   /**
+   * Compress tool result by applying GeoJSON compression if applicable
+   * Used for follow-up requests to reduce token usage while keeping POI data available
+   */
+  compressToolResult(toolName, result) {
+    // For Rurubu POI searches, compress the GeoJSON but keep it (unlike truncate which removes it)
+    if (toolName === 'search_rurubu_pois' && result.content && result.content[0]) {
+      try {
+        const data = JSON.parse(result.content[0].text);
+        if (data.geojson && data.geojson.features) {
+          // Compress GeoJSON while keeping structure
+          const compressed = {
+            ...data,
+            geojson: this.compressGeoJSON(data.geojson)
+          };
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify(compressed) // No formatting - save tokens
+            }]
+          };
+        }
+      } catch (e) {
+        // If parsing fails, return original
+        return result;
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Compress GeoJSON data by removing verbose properties and reducing precision
+   * Reduces token usage by ~60-70% while keeping user-relevant POI information
+   *
+   * Ultra-compressed format optimizations:
+   * - Pipe-delimited string format (saves ~20-30% vs JSON arrays)
+   * - String dictionary/interning (saves ~30-40% on repeated strings)
+   * - Single-letter property keys (saves ~40% on property names)
+   * - 6-decimal coordinate precision (saves ~10% while maintaining accuracy)
+   * - Remove GeoJSON structure overhead (saves ~20%)
+   * - No JSON formatting whitespace (saves ~15%)
+   */
+  compressGeoJSON(geojson) {
+    if (!geojson || !geojson.features) return geojson;
+
+    // STEP 1: Build string dictionary for repeated values
+    // Collect unique strings for category, address, and sgenreName
+    const stringSet = new Set();
+
+    geojson.features.forEach(feature => {
+      const p = feature.properties || {};
+      if (p.category) stringSet.add(p.category);
+      if (p.address) stringSet.add(p.address);
+      if (p.sgenreName) stringSet.add(p.sgenreName);
+    });
+
+    // Convert set to array (dictionary)
+    const dictionary = Array.from(stringSet);
+
+    // Create reverse lookup map for O(1) index access
+    const dictMap = new Map();
+    dictionary.forEach((str, idx) => dictMap.set(str, idx));
+
+    // Helper function to escape pipes and newlines in field values
+    const escapeField = (value) => {
+      if (value === null || value === undefined) return '';
+      const str = String(value);
+      return str.replace(/\|/g, '\\|').replace(/\n/g, '\\n');
+    };
+
+    // Create pipe-delimited dictionary string (escape pipes in dict strings)
+    const dictionaryString = dictionary.map(str => escapeField(str)).join('|');
+
+    // STEP 2: Compress features using pipe-delimited format
+    // Format: id|name|catIdx|lon|lat|rank|time|price|addrIdx|genreIdx|picCount
+    const compressedLines = geojson.features.map(feature => {
+      const p = feature.properties || {};
+      const c = feature.geometry.coordinates;
+
+      // Create pipe-delimited string for this POI
+      // Indices: 0=id, 1=name, 2=catIdx, 3=lon, 4=lat, 5=rank, 6=time, 7=price, 8=addrIdx, 9=genreIdx, 10=pics
+      const fields = [
+        p.id,
+        escapeField(p.name),
+        p.category ? dictMap.get(p.category) : '', // Dictionary index (empty if null)
+        Math.round(c[0] * 1000000) / 1000000, // 6 decimal precision (~11cm accuracy)
+        Math.round(c[1] * 1000000) / 1000000, // 6 decimal precision
+        p.rank || 0,
+        escapeField(p.time || ''),
+        escapeField(p.price || ''),
+        p.address ? dictMap.get(p.address) : '', // Dictionary index
+        p.sgenreName ? dictMap.get(p.sgenreName) : '', // Dictionary index
+        (p.photos && p.photos.length) || 0
+      ];
+
+      return fields.join('|');
+    });
+
+    // Join all POIs with newlines
+    const compressedString = compressedLines.join('\n');
+
+    // Return pipe-delimited format with pipe-delimited dictionary
+    return {
+      t: 'p', // type: pipe-delimited
+      dict: dictionaryString, // Pipe-delimited dictionary string
+      f: compressedString // features as pipe-delimited string
+    };
+  }
+
+  /**
    * Truncate large tool results to reduce payload size
    * Keeps essential info while removing verbose data
    */
@@ -573,20 +1064,19 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
       try {
         const data = JSON.parse(result.content[0].text);
         if (data.geojson && data.geojson.features) {
-          // Keep summary info but truncate detailed POI data
+          // Keep minimal summary - POI details available via get_visible_pois tool
           const truncated = {
-            category: data.category,
-            location: data.location,
-            jis_code: data.jis_code,
-            count: data.count,
-            // Only include first 3 POI names as examples
-            sample_pois: data.geojson.features.slice(0, 3).map(f => f.properties.name),
-            message: `Found ${data.count} results. All POIs have been automatically displayed on the map with markers - no need to call add_points_to_map or other visualization tools. The map is automatically centered and zoomed to show all results. Just provide a friendly response to the user describing what was found.`
+            sid: data.search_id || 'unknown', // Abbreviate keys
+            cat: data.category,
+            loc: data.location,
+            jis: data.jis_code,
+            cnt: data.count,
+            msg: `${data.count} ${data.category} POIs in ${data.location}. Use get_poi_summary for details.`
           };
           return {
             content: [{
               type: 'text',
-              text: JSON.stringify(truncated, null, 2)
+              text: JSON.stringify(truncated) // No formatting - save tokens
             }]
           };
         }
@@ -602,13 +1092,10 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
    * Execute a tool from any of the three MCP sources
    */
   async executeTool(toolName, args) {
-    console.log(`[Claude] Executing tool: ${toolName}`, args);
-
     try {
       // Check Rurubu MCP tools
       const rurubuTool = this.rurubuMCP.getToolDefinition(toolName);
       if (rurubuTool) {
-        console.log('[Claude] → Rurubu MCP');
         const result = await this.rurubuMCP.executeTool(toolName, args);
 
         // If this is a search_rurubu_pois call, extract and store the full GeoJSON data
@@ -627,7 +1114,7 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
               this.onRurubuData(resultData.geojson, metadata);
             }
           } catch (e) {
-            console.warn('[Claude] Failed to extract Rurubu GeoJSON:', e);
+            // Failed to extract Rurubu GeoJSON
           }
         }
 
@@ -638,7 +1125,6 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
       const mapTools = this.mapController.getToolsForClaude();
       const mapTool = mapTools.find(t => t.name === toolName);
       if (mapTool) {
-        console.log('[Claude] → Map Tools');
         return await this.mapController.executeTool(toolName, args);
       }
 
@@ -647,7 +1133,6 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
         const searchHistoryTools = this.app.getSearchHistoryTools();
         const searchHistoryTool = searchHistoryTools.find(t => t.name === toolName);
         if (searchHistoryTool) {
-          console.log('[Claude] → Search History');
           return await this.app.executeSearchHistoryTool(toolName, args);
         }
       }
@@ -671,7 +1156,6 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
    */
   clearHistory() {
     this.conversationHistory = [];
-    console.log('[Claude] Conversation history cleared');
   }
 
   /**
@@ -692,35 +1176,82 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
   }
 
   /**
-   * Estimate token count for text (conservative approximation: ~3 chars per token)
-   * More conservative to account for structured content (JSON, tool calls, etc.)
+   * Estimate token count for text (extremely conservative approximation)
+   * Uses 1.5 chars per token to account for:
+   * - JSON structure overhead (brackets, quotes, commas)
+   * - Tool definitions and complex nested data
+   * - Japanese/multi-byte characters
+   * - Encoding overhead
+   *
+   * Note: Previous formula (chars/3) underestimated by 21.5x, causing 208k token overflow.
+   * This conservative formula prevents exceeding the 200k limit.
    */
   estimateTokens(text) {
     if (!text) return 0;
-    return Math.ceil(text.length / 3);
+
+    // Extremely conservative: 1.5 chars per token (was 3, which severely underestimated)
+    // Testing showed chars/3 resulted in 21.5x underestimation (9.7k estimate vs 208k actual)
+    let tokens = Math.ceil(text.length / 1.5);
+
+    // Add significant overhead for JSON structures (check for brackets/braces)
+    if (text.includes('{') || text.includes('[')) {
+      // JSON has significant token overhead from structure, especially with tool definitions
+      tokens = Math.ceil(tokens * 1.5); // 50% overhead for JSON
+    }
+
+    return tokens;
+  }
+
+  /**
+   * Calculate and cache token count for a message
+   * Uses cached value if available, otherwise calculates and caches
+   * Uses WeakMap to avoid polluting message objects sent to API
+   * @param {Object} msg - Message object
+   * @returns {number} Token count
+   */
+  getMessageTokens(msg) {
+    // Return cached value if available
+    const cached = this.messageTokenCache.get(msg);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    // Calculate token count
+    let tokens = 0;
+    if (typeof msg.content === 'string') {
+      tokens = this.estimateTokens(msg.content);
+    } else if (Array.isArray(msg.content)) {
+      msg.content.forEach(block => {
+        if (block.type === 'text') {
+          tokens += this.estimateTokens(block.text);
+        } else if (block.type === 'tool_use') {
+          tokens += this.estimateTokens(JSON.stringify(block.input));
+        } else if (block.type === 'tool_result') {
+          tokens += this.estimateTokens(JSON.stringify(block.content));
+        }
+      });
+    }
+
+    // Cache the result in WeakMap
+    this.messageTokenCache.set(msg, tokens);
+    return tokens;
   }
 
   /**
    * Calculate total tokens in conversation
+   * Uses cached token counts for efficiency
    */
   calculateTotalTokens() {
-    let total = this.estimateTokens(this.systemPrompt);
+    // Cache system prompt tokens
+    if (this._cachedSystemPromptTokens === undefined || this._lastSystemPrompt !== this.systemPrompt) {
+      this._cachedSystemPromptTokens = this.estimateTokens(this.systemPrompt);
+      this._lastSystemPrompt = this.systemPrompt;
+    }
+    let total = this._cachedSystemPromptTokens;
 
-    // Add conversation history
+    // Add conversation history using cached tokens
     this.conversationHistory.forEach(msg => {
-      if (typeof msg.content === 'string') {
-        total += this.estimateTokens(msg.content);
-      } else if (Array.isArray(msg.content)) {
-        msg.content.forEach(block => {
-          if (block.type === 'text') {
-            total += this.estimateTokens(block.text);
-          } else if (block.type === 'tool_use') {
-            total += this.estimateTokens(JSON.stringify(block.input));
-          } else if (block.type === 'tool_result') {
-            total += this.estimateTokens(JSON.stringify(block.content));
-          }
-        });
-      }
+      total += this.getMessageTokens(msg);
     });
 
     return total;
@@ -728,95 +1259,257 @@ Example: "Find temples in Kyoto" → search_rurubu_pois() → [automatic map dis
 
   /**
    * Prune old conversation messages to stay under token limit
+   * @returns {Object} Pruning info: { pruned, messagesPruned, tokensSaved, newTotal }
    */
   async pruneConversation() {
     const currentTokens = this.calculateTotalTokens();
 
     if (currentTokens < this.PRUNE_THRESHOLD) {
-      return false; // No pruning needed
+      return { pruned: false, reason: 'Below threshold' };
     }
 
-    console.log(`[Claude] Pruning conversation: ${currentTokens} tokens (threshold: ${this.PRUNE_THRESHOLD})`);
+    errorLogger.info('Token Management', 'Auto-pruning triggered', {
+      currentTokens,
+      threshold: this.PRUNE_THRESHOLD,
+      percentage: Math.round((currentTokens / this.MAX_TOKENS) * 100)
+    });
 
-    // Keep first 2 messages (initial context) and last 10 messages
-    const messagesToKeep = 10;
+    // Keep first 2 messages (initial context) and last N messages
+    // Less aggressive pruning per instance, but prune earlier to prevent overflow
+    const messagesToKeep = 8; // Keep more messages per prune
     const initialMessages = 2;
 
-    if (this.conversationHistory.length > initialMessages + messagesToKeep) {
-      const prunedMessages = this.conversationHistory.slice(initialMessages, -messagesToKeep);
-
-      // Create summary of pruned content
-      const summary = this.createConversationSummary(prunedMessages);
-      this.conversationSummary = summary;
-
-      // Keep initial messages, add summary, keep recent messages
-      const recentMessages = this.conversationHistory.slice(-messagesToKeep);
-      this.conversationHistory = [
-        ...this.conversationHistory.slice(0, initialMessages),
-        {
-          role: 'user',
-          content: `[Previous conversation summary: ${summary}]`
-        },
-        ...recentMessages
-      ];
-
-      const newTokens = this.calculateTotalTokens();
-      console.log(`[Claude] Conversation pruned: ${currentTokens} → ${newTokens} tokens`);
-      console.log(`[Claude] Kept ${initialMessages} initial + ${messagesToKeep} recent messages`);
-
-      return true;
+    if (this.conversationHistory.length <= initialMessages + messagesToKeep) {
+      errorLogger.warn('Token Management', 'Cannot prune: too few messages', {
+        messageCount: this.conversationHistory.length,
+        requiredMin: initialMessages + messagesToKeep
+      });
+      return { pruned: false, reason: 'Too few messages to prune' };
     }
 
-    return false;
+    const beforeCount = this.conversationHistory.length;
+
+    // Find safe cut point that doesn't break tool_use/tool_result pairs
+    // We need to keep complete message pairs: assistant (with tool_use) + user (with tool_result)
+    let cutIndex = this.conversationHistory.length - messagesToKeep;
+
+    // Keep searching backward for a safe cut point
+    // A safe cut point is where recentMessages starts with:
+    // - A user message WITHOUT tool_result, OR
+    // - An assistant message WITHOUT tool_use
+    while (cutIndex > initialMessages && cutIndex < this.conversationHistory.length) {
+      const messageAtCut = this.conversationHistory[cutIndex];
+
+      // Check if this is a safe cut point
+      let isSafe = false;
+
+      if (messageAtCut.role === 'user') {
+        // Safe if user message has NO tool_result
+        if (Array.isArray(messageAtCut.content)) {
+          const hasToolResult = messageAtCut.content.some(block => block.type === 'tool_result');
+          isSafe = !hasToolResult;
+        } else {
+          // String content (no tool_result)
+          isSafe = true;
+        }
+      } else if (messageAtCut.role === 'assistant') {
+        // Assistant messages are ALWAYS safe to start with
+        // If it has tool_use, the next message (user with tool_result) will also be in recentMessages
+        isSafe = true;
+      }
+
+      if (isSafe) {
+        break; // Found safe cut point
+      }
+
+      // Not safe, move back by one message pair (user + assistant)
+      cutIndex -= 2;
+    }
+
+    // Ensure we don't go below initialMessages
+    if (cutIndex <= initialMessages) {
+      // Couldn't find a safe cut point - skip pruning this time
+      errorLogger.warn('Token Management', 'No safe cut point found, skipping pruning', {
+        conversationLength: this.conversationHistory.length,
+        initialMessages: initialMessages
+      });
+      return { pruned: false, reason: 'No safe cut point found' };
+    }
+
+    const prunedMessages = this.conversationHistory.slice(initialMessages, cutIndex);
+    const recentMessages = this.conversationHistory.slice(cutIndex);
+
+    // Create intelligent summary of pruned content
+    const summary = this.createConversationSummary(prunedMessages);
+    this.conversationSummary = summary;
+
+    // Keep initial messages, add summary, keep recent messages
+    this.conversationHistory = [
+      ...this.conversationHistory.slice(0, initialMessages),
+      {
+        role: 'user',
+        content: `[Previous conversation summary: ${summary}]`
+      },
+      ...recentMessages
+    ];
+
+    const afterCount = this.conversationHistory.length;
+    const newTokens = this.calculateTotalTokens();
+    const tokensSaved = currentTokens - newTokens;
+
+    errorLogger.info('Token Management', 'Pruning completed', {
+      messagesPruned: prunedMessages.length,
+      beforeCount,
+      afterCount,
+      tokensSaved,
+      newTotal: newTokens,
+      newPercentage: Math.round((newTokens / this.MAX_TOKENS) * 100)
+    });
+
+    return {
+      pruned: true,
+      messagesPruned: prunedMessages.length,
+      tokensSaved,
+      newTotal: newTokens,
+      summary
+    };
   }
 
   /**
-   * Create a summary of conversation messages
+   * Create an intelligent summary of conversation messages
+   * Preserves important context like locations searched, POIs found, and actions taken
    */
   createConversationSummary(messages) {
     const userQueries = [];
     const locations = new Set();
     const actions = new Set();
+    const searches = []; // Track search results
+    const toolsUsed = new Set();
 
     messages.forEach(msg => {
+      // Process user messages
       if (msg.role === 'user' && typeof msg.content === 'string') {
+        // Skip summary messages
+        if (msg.content.startsWith('[Previous conversation summary:')) {
+          return;
+        }
+
         userQueries.push(msg.content);
 
-        // Extract location mentions (rough heuristic)
-        const locationMatches = msg.content.match(/(?:in|near|at|from|to)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g);
-        if (locationMatches) {
-          locationMatches.forEach(match => {
+        // Extract Japanese location names (カタカナ and 漢字)
+        const japaneseLocations = msg.content.match(/[一-龠ぁ-ゔァ-ヴー々〆〤]{2,}/g);
+        if (japaneseLocations) {
+          japaneseLocations.forEach(loc => locations.add(loc));
+        }
+
+        // Extract English location names
+        const englishLocations = msg.content.match(/(?:in|near|at|from|to)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g);
+        if (englishLocations) {
+          englishLocations.forEach(match => {
             const location = match.replace(/(?:in|near|at|from|to)\s+/, '');
             locations.add(location);
           });
         }
 
         // Extract actions
-        if (msg.content.match(/find|show|search|get/i)) actions.add('search');
-        if (msg.content.match(/route|direction|navigate|go/i)) actions.add('routing');
-        if (msg.content.match(/hide|clear|remove/i)) actions.add('manage');
+        if (msg.content.match(/探して|検索|見つけ|find|show|search|get/i)) actions.add('search');
+        if (msg.content.match(/ルート|道順|route|direction|navigate|go/i)) actions.add('routing');
+        if (msg.content.match(/隠す|消す|hide|clear|remove/i)) actions.add('manage');
+        if (msg.content.match(/おすすめ|人気|recommend|popular/i)) actions.add('recommendations');
+      }
+
+      // Process assistant messages with tool use
+      if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+        msg.content.forEach(block => {
+          if (block.type === 'tool_use') {
+            toolsUsed.add(block.name);
+
+            // Track searches
+            if (block.name === 'search_pois_by_jis_code' || block.name === 'search_pois_by_location') {
+              const location = block.input?.location || 'unknown';
+              const category = block.input?.category || 'unknown';
+              searches.push(`${category} in ${location}`);
+            }
+          }
+
+          // Extract POI counts from text responses
+          if (block.type === 'text') {
+            const countMatch = block.text.match(/(\d+)件|found (\d+)|showing (\d+)/i);
+            if (countMatch) {
+              const count = countMatch[1] || countMatch[2] || countMatch[3];
+              if (searches.length > 0) {
+                searches[searches.length - 1] += ` (${count} POIs)`;
+              }
+            }
+          }
+        });
       }
     });
 
-    const summary = [
-      `User asked ${userQueries.length} questions`,
-      locations.size > 0 ? `about ${Array.from(locations).slice(0, 3).join(', ')}` : '',
-      actions.size > 0 ? `including ${Array.from(actions).join(', ')}` : ''
-    ].filter(Boolean).join(' ');
+    // Build comprehensive summary
+    const parts = [];
 
+    if (userQueries.length > 0) {
+      parts.push(`${userQueries.length} questions asked`);
+    }
+
+    if (locations.size > 0) {
+      const locationList = Array.from(locations).slice(0, 5).join(', ');
+      parts.push(`Locations: ${locationList}`);
+    }
+
+    if (searches.length > 0) {
+      const searchSummary = searches.slice(0, 3).join('; ');
+      parts.push(`Searches: ${searchSummary}`);
+    }
+
+    if (actions.size > 0) {
+      parts.push(`Actions: ${Array.from(actions).join(', ')}`);
+    }
+
+    if (toolsUsed.size > 0) {
+      parts.push(`Tools used: ${Array.from(toolsUsed).slice(0, 5).join(', ')}`);
+    }
+
+    const summary = parts.join(' | ');
     return summary || 'Previous conversation about Japan travel';
   }
 
   /**
-   * Get token usage info
+   * Get token usage info using cached calculations
    */
   getTokenUsage() {
-    const total = this.calculateTotalTokens();
+    // Use cached system prompt tokens
+    if (this._cachedSystemPromptTokens === undefined || this._lastSystemPrompt !== this.systemPrompt) {
+      this._cachedSystemPromptTokens = this.estimateTokens(this.systemPrompt);
+      this._lastSystemPrompt = this.systemPrompt;
+    }
+    const systemPromptTokens = this._cachedSystemPromptTokens;
+
+    // Use cached message tokens
+    let conversationTokens = 0;
+    this.conversationHistory.forEach(msg => {
+      conversationTokens += this.getMessageTokens(msg);
+    });
+
+    // Estimate tools array size (not included in request but adds overhead)
+    // Tools are sent with every request and can be 20-40k tokens
+    const tools = [
+      ...this.rurubuMCP.getToolsForClaude(),
+      ...this.mapController.getToolsForClaude(),
+      ...(this.app ? this.app.getSearchHistoryTools() : [])
+    ];
+    const toolsTokens = this.estimateTokens(JSON.stringify(tools));
+
+    const total = systemPromptTokens + conversationTokens + toolsTokens;
     const percentage = (total / this.MAX_TOKENS) * 100;
     const remaining = this.MAX_TOKENS - total;
 
     return {
       total,
+      systemPrompt: systemPromptTokens,
+      conversationHistory: conversationTokens,
+      tools: toolsTokens,
       max: this.MAX_TOKENS,
       percentage: Math.round(percentage),
       remaining,

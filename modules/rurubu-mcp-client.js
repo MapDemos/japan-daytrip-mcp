@@ -279,15 +279,19 @@ export class RurubuMCPClient {
     return this.jisData.filter(entry => {
       if (!entry.city) return false;
 
+      // Use startsWith for more precise matching to avoid false positives
+      // e.g., "京都" should not match "東京" (Tokyo contains "京")
       const cityMatch =
-        entry.city.includes(location) ||
-        entry.city_kana.includes(location) ||
-        location.includes(entry.city);
+        entry.city.startsWith(location) ||
+        entry.city_kana.startsWith(location) ||
+        entry.city === location ||
+        entry.city_kana === location;
 
       const prefMatch =
-        entry.prefecture.includes(location) ||
-        entry.prefecture_kana.includes(location) ||
-        location.includes(entry.prefecture);
+        entry.prefecture.startsWith(location) ||
+        entry.prefecture_kana.startsWith(location) ||
+        entry.prefecture === location ||
+        entry.prefecture_kana === location;
 
       return cityMatch || prefMatch;
     });
@@ -426,7 +430,7 @@ export class RurubuMCPClient {
     return {
       content: [{
         type: 'text',
-        text: JSON.stringify(result, null, 2)
+        text: JSON.stringify(result) // No formatting - save tokens
       }]
     };
   }
@@ -479,7 +483,6 @@ export class RurubuMCPClient {
 
       // Use ALL JIS codes for comprehensive coverage
       jisCodes = jisData.codes || [jisData.primary];
-      console.log(`[Rurubu MCP] Found ${jisCodes.length} JIS codes for ${location}, will search all in parallel`);
     } else {
       jisCodes = [jis_code];
     }
@@ -489,9 +492,8 @@ export class RurubuMCPClient {
 
     try {
       // Search all JIS codes in parallel
-
-      const searchPromises = jisCodes.map(code =>
-        this.searchSingleJISCode({
+      const searchPromises = jisCodes.map(code => {
+        return this.searchSingleJISCode({
           jis_code: code,
           category,
           location,
@@ -500,8 +502,8 @@ export class RurubuMCPClient {
           mgenre,
           sgenre,
           filters
-        })
-      );
+        });
+      });
 
       const results = await Promise.all(searchPromises);
 
@@ -517,8 +519,14 @@ export class RurubuMCPClient {
       // Deduplicate by POI ID (if available)
       const uniqueFeatures = this.deduplicateFeatures(allFeatures);
 
+      // Sort by rank/rating (highest first)
+      uniqueFeatures.sort((a, b) => {
+        const rankA = a.properties?.rank || a.properties?.rating || 0;
+        const rankB = b.properties?.rank || b.properties?.rating || 0;
+        return rankB - rankA; // Descending order (highest rank first)
+      });
 
-      // Build final GeoJSON with all features
+      // Build final GeoJSON with all features (no cap)
       const finalGeoJSON = {
         type: 'FeatureCollection',
         features: uniqueFeatures
@@ -537,7 +545,7 @@ export class RurubuMCPClient {
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify(result, null, 2)
+          text: JSON.stringify(result) // No formatting - save tokens
         }]
       };
 
@@ -547,70 +555,162 @@ export class RurubuMCPClient {
   }
 
   /**
-   * Search a single JIS code with pagination
+   * Search a single JIS code with pagination and robust error handling
    * Helper method for parallel searches
    */
   async searchSingleJISCode({ jis_code, category, location, finalLgenre, limit, mgenre, sgenre, filters }) {
+    const TIMEOUT_MS = 20000; // 20 second timeout per request
+    const MAX_PAGES = 10; // Cap pagination to prevent infinite loops
+    const MAX_RETRIES = 3; // Max retries per page
 
-    const allFeatures = [];
-    let pageNo = 1;
-    let totalPages = 1;
+    // STEP 1: Fetch first page to get total page count
+    const firstPageData = await this.fetchPage({
+      jis_code,
+      finalLgenre,
+      limit,
+      mgenre,
+      sgenre,
+      filters,
+      pageNo: 1,
+      TIMEOUT_MS,
+      MAX_RETRIES
+    });
 
-    while (pageNo <= totalPages) {
-      // Build API URL with base parameters
-      const params = new URLSearchParams({
-        appid: this.appId,
-        jis: jis_code,
-        lgenre: finalLgenre,
-        pagecount: limit.toString(),
-        pageno: pageNo.toString(),
-        responsetype: 'json'
-      });
-
-      // Add optional medium genre
-      if (mgenre) {
-        params.append('mgenre', mgenre);
-      }
-
-      // Add optional small genre
-      if (sgenre) {
-        params.append('sgenre', sgenre);
-      }
-
-      // Add SOC filters
-      for (const [key, value] of Object.entries(filters)) {
-        if (key.startsWith('SOC') && value !== undefined && value !== null) {
-          params.append(key, value.toString());
-        }
-      }
-
-      const url = `${this.endpoint}?${params.toString()}`;
-      const response = await fetch(url);
-
-      if (!response.ok) {
-        console.warn(`[Rurubu MCP] API error for JIS ${jis_code}: ${response.status}`);
-        break; // Skip this JIS code if error
-      }
-
-      const data = await response.json();
-
-      // Update total pages from API response
-      if (data[0] && data[0].TotalPages) {
-        totalPages = data[0].TotalPages;
-      }
-
-      // Convert to GeoJSON and collect features
-      const geojson = this.convertToGeoJSON(data, category);
-      allFeatures.push(...geojson.features);
-
-      pageNo++;
+    if (!firstPageData) {
+      console.warn(`[Rurubu MCP] Failed to fetch first page for JIS ${jis_code}`);
+      return { features: [], pages: 0, failedPages: 1 };
     }
 
+    const allFeatures = [];
+    let totalPages = 1;
+
+    // Extract features from first page
+    const firstPageGeoJSON = this.convertToGeoJSON(firstPageData, category);
+    if (firstPageGeoJSON?.features?.length > 0) {
+      allFeatures.push(...firstPageGeoJSON.features);
+    }
+
+    // Get total pages from API response
+    if (firstPageData[0]?.TotalPages) {
+      totalPages = Math.min(firstPageData[0].TotalPages, MAX_PAGES);
+    }
+
+    // STEP 2: Fetch remaining pages in parallel if there are more pages
+    if (totalPages > 1) {
+      const pageNumbers = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
+
+      const pagePromises = pageNumbers.map(pageNo =>
+        this.fetchPage({
+          jis_code,
+          finalLgenre,
+          limit,
+          mgenre,
+          sgenre,
+          filters,
+          pageNo,
+          TIMEOUT_MS,
+          MAX_RETRIES
+        })
+      );
+
+      const pageResults = await Promise.allSettled(pagePromises);
+
+      let successCount = 0;
+      let failedCount = 0;
+
+      pageResults.forEach((result, index) => {
+        const pageNo = pageNumbers[index];
+        if (result.status === 'fulfilled' && result.value) {
+          const geojson = this.convertToGeoJSON(result.value, category);
+          if (geojson?.features?.length > 0) {
+            allFeatures.push(...geojson.features);
+            successCount++;
+          }
+        } else {
+          failedCount++;
+        }
+      });
+    }
 
     return {
       features: allFeatures,
-      pages: totalPages
+      pages: totalPages,
+      failedPages: totalPages - 1 - (allFeatures.length > 0 ? 1 : 0)
     };
+  }
+
+  /**
+   * Fetch a single page with retry logic
+   */
+  async fetchPage({ jis_code, finalLgenre, limit, mgenre, sgenre, filters, pageNo, TIMEOUT_MS, MAX_RETRIES }) {
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        // Build API URL with base parameters
+        const params = new URLSearchParams({
+          appid: this.appId,
+          jis: jis_code,
+          lgenre: finalLgenre,
+          pagecount: limit.toString(),
+          pageno: pageNo.toString(),
+          responsetype: 'json'
+        });
+
+        // Add optional parameters
+        if (mgenre) params.append('mgenre', mgenre);
+        if (sgenre) params.append('sgenre', sgenre);
+
+        // Add SOC filters
+        if (filters && typeof filters === 'object') {
+          for (const [key, value] of Object.entries(filters)) {
+            if (key.startsWith('SOC') && value !== undefined && value !== null) {
+              params.append(key, value.toString());
+            }
+          }
+        }
+
+        const url = `${this.endpoint}?${params.toString()}`;
+
+        // Add timeout to prevent hanging requests
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+        const response = await fetch(url, { signal: controller.signal });
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          if (response.status === 429 && attempt < MAX_RETRIES) {
+            console.warn(`[Rurubu MCP] Rate limit hit for page ${pageNo}, retry ${attempt}/${MAX_RETRIES}`);
+            await this.sleep(2000 * attempt); // Exponential backoff
+            continue;
+          }
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        // Validate response structure
+        if (!data || !Array.isArray(data) || data.length === 0) {
+          return null;
+        }
+
+        return data;
+
+      } catch (error) {
+        if (attempt === MAX_RETRIES) {
+          console.error(`[Rurubu MCP] Failed to fetch page ${pageNo} after ${MAX_RETRIES} attempts:`, error.message);
+          return null;
+        }
+        await this.sleep(1000 * attempt);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Helper method to sleep for a given duration
+   */
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   /**

@@ -88,6 +88,74 @@ export const CONFIG = {
 
   // Enable debug logging
   DEBUG: true,
+
+  // ============================================
+  // PERFORMANCE & LIMITS
+  // ============================================
+
+  // Maximum POIs per search to prevent token overflow
+  MAX_POIS_PER_SEARCH: 100,
+
+  // Maximum number of stored searches in history
+  MAX_SEARCH_HISTORY: 100,
+
+  // Total POIs visible on map at once
+  MAX_VISIBLE_POIS: 1000,
+
+  // Maximum characters in user input
+  MAX_INPUT_LENGTH: 2000,
+
+  // Minimum milliseconds between requests (rate limiting)
+  REQUEST_RATE_LIMIT_MS: 1000,
+
+  // ============================================
+  // TOKEN MANAGEMENT
+  // ============================================
+
+  // Claude API context limit
+  MAX_CONTEXT_TOKENS: 200000,
+
+  // Start pruning at 40% of max (more aggressive due to large tool arrays and POI data)
+  PRUNE_THRESHOLD_TOKENS: 80000,
+
+  // Show warning at 30% of max
+  WARNING_THRESHOLD_TOKENS: 60000,
+
+  // ============================================
+  // API SETTINGS
+  // ============================================
+
+  // Maximum retry attempts for failed API calls
+  MAX_API_RETRIES: 3,
+
+  // API request timeout in milliseconds
+  API_TIMEOUT_MS: 30000,
+
+  // ============================================
+  // MAP SETTINGS
+  // ============================================
+
+  // POI icon size in pixels
+  ICON_SIZE: 48,
+
+  // Padding when fitting map bounds
+  MAP_PADDING: 50,
+
+  // Debounce delay for map context updates
+  DEBOUNCE_MAP_UPDATE_MS: 500,
+
+  // Maximum failed pages before stopping pagination
+  MAX_FAILED_PAGES: 3,
+
+  // ============================================
+  // UI SETTINGS
+  // ============================================
+
+  // Maximum cached translations
+  TRANSLATION_CACHE_SIZE: 100,
+
+  // Maximum chat messages to display
+  MAX_CHAT_MESSAGES: 50,
 };
 
 /**
@@ -114,10 +182,6 @@ export function validateConfig() {
     console.error('   - Mapbox Token: https://account.mapbox.com/access-tokens/');
     console.error('   - Lambda Proxy: Configure CLAUDE_API_PROXY endpoint');
     return false;
-  }
-
-  if (CONFIG.DEBUG) {
-    console.log('✓ Configuration validated successfully');
   }
 
   return true;

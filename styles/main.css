@@ -705,3 +705,77 @@ body {
     transform: translateY(0);
   }
 }
+
+/* ========================================
+   Numbered Route Markers
+   ======================================== */
+.text-marker {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  box-sizing: border-box;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  box-shadow: var(--shadow-md);
+  cursor: pointer;
+  transition: transform 0.2s ease;
+}
+
+.text-marker:hover {
+  transform: scale(1.1);
+  box-shadow: var(--shadow-lg);
+}
+
+.marker-text {
+  font-size: 16px;
+  font-weight: bold;
+  color: white;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+/* ========================================
+   Star Markers for Recommended POIs
+   ======================================== */
+.star-marker {
+  display: flex !important;
+  justify-content: center;
+  align-items: center;
+  width: 36px !important;
+  height: 36px !important;
+  background: linear-gradient(135deg, #ff6b35 0%, #ff8c42 100%) !important;
+  border-radius: 50% !important;
+  border: 3px solid white !important;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4) !important;
+  cursor: pointer;
+  font-size: 20px !important;
+  line-height: 1;
+  animation: starPulse 2s ease-in-out infinite;
+  user-select: none;
+  pointer-events: auto !important;
+}
+
+.star-marker:hover {
+  animation: starPulseHover 1s ease-in-out infinite;
+  box-shadow: 0 4px 15px rgba(255, 107, 53, 0.6);
+}
+
+@keyframes starPulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4);
+  }
+  50% {
+    transform: scale(1.15);
+    box-shadow: 0 4px 15px rgba(255, 107, 53, 0.5);
+  }
+}
+
+@keyframes starPulseHover {
+  0%, 100% {
+    transform: scale(1.1);
+  }
+  50% {
+    transform: scale(1.25);
+  }
+}

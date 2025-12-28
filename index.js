@@ -15,6 +15,8 @@ import { MapController } from './modules/map-controller.js';
 import { I18n } from './modules/i18n.js';
 import { ThinkingSimulator } from './modules/thinking-simulator.js';
 import { reverseGeocode } from './modules/mapbox-service-utils.js';
+import { safeGet, safeGetElement, safeCoordinates, safeArray } from './modules/utils.js';
+import { errorLogger } from './modules/error-logger.js';
 
 class JapanDayTripApp {
   constructor() {
@@ -27,8 +29,9 @@ class JapanDayTripApp {
     this.isProcessing = false;
 
     // Store full POI data with all Rurubu properties
-    // Maps coordinates (as string "lng,lat") to full feature properties
+    // Maps POI name to full feature properties with LRU eviction
     this.poiDataStore = new Map();
+    this.MAX_POI_DATA_STORE_SIZE = 1000; // Limit to prevent unbounded growth
 
     // Search history management
     this.searchHistory = new Map(); // Map<searchId, SearchResult>
@@ -37,6 +40,29 @@ class JapanDayTripApp {
 
     // User location for context-aware queries
     this.userLocation = null;
+
+    // Debounce timer for map view updates
+    this.mapViewUpdateTimer = null;
+
+    // Rate limiting
+    this.lastRequestTime = 0;
+    this.MIN_REQUEST_INTERVAL = 1000; // 1 second between requests
+
+    // Input validation
+    this.MAX_INPUT_LENGTH = 2000; // Maximum characters in user input
+
+    // Translation cache
+    this.translationCache = new Map();
+    this.MAX_TRANSLATION_CACHE_SIZE = 100;
+
+    // Request queue for handling race conditions
+    this.requestQueue = [];
+    this.activeRequest = null;
+    this.isClearing = false; // Flag to prevent race conditions during clear
+
+    // Store event handler references for cleanup
+    this.eventHandlers = {};
+    this.mapEventHandlers = {};
   }
 
   /**
@@ -44,8 +70,6 @@ class JapanDayTripApp {
    */
   async initialize() {
     try {
-      console.log('🚀 Initializing Japan Day Trip MCP Assistant...');
-
       // Validate configuration
       if (!validateConfig()) {
         this.showConfigError();
@@ -56,16 +80,12 @@ class JapanDayTripApp {
       this.addSystemMessage(this.i18n.t('system.welcome'));
 
       // Initialize Rurubu MCP (client-side)
-      console.log('1/4 Initializing Rurubu MCP...');
       this.rurubuMCP = new RurubuMCPClient(this.config);
       await this.rurubuMCP.initialize();
-      console.log('✓ Rurubu MCP ready');
 
       // Initialize Map Controller
-      console.log('2/4 Initializing Map...');
       this.mapController = new MapController(this.config, this); // Pass app reference
       await this.mapController.initialize('map');
-      console.log('✓ Map initialized');
 
       // Set initial map language
       this.mapController.setMapLanguage(this.i18n.getCurrentLanguage());
@@ -75,8 +95,13 @@ class JapanDayTripApp {
         await this.showPoiModal(properties);
       });
 
+      // Setup map move handler to update Claude's context
+      this.mapEventHandlers.moveend = () => {
+        this.updateClaudeMapContext();
+      };
+      this.mapController.map.on('moveend', this.mapEventHandlers.moveend);
+
       // Initialize AI Client (Claude or Gemini)
-      console.log(`3/4 Initializing ${this.config.AI_PROVIDER.toUpperCase()}...`);
       if (this.config.AI_PROVIDER === 'gemini') {
         this.claudeClient = new GeminiClient(
           this.config.GEMINI_API_KEY,
@@ -85,7 +110,6 @@ class JapanDayTripApp {
           this.i18n,
           this.config
         );
-        console.log('✓ Gemini client ready');
       } else {
         this.claudeClient = new ClaudeClient(
           this.config.CLAUDE_API_KEY,
@@ -96,13 +120,10 @@ class JapanDayTripApp {
           this, // App reference for search history management
           (geojson, metadata) => this.storeRurubuData(geojson, metadata) // Callback to store full POI data
         );
-        console.log('✓ Claude client ready');
       }
 
       // Setup event listeners
-      console.log('4/4 Setting up event listeners...');
       this.setupEventListeners();
-      console.log('✓ Event listeners attached');
 
       // Update UI with translations
       this.updateUI();
@@ -110,17 +131,14 @@ class JapanDayTripApp {
       // Initialize token counter display
       this.updateTokenCounter();
 
-      console.log('✅ Application initialized successfully!');
-      console.log('---');
-      console.log('Available tools:');
-      console.log('  - Rurubu MCP:', this.rurubuMCP.listTools().length, 'tools');
-      console.log('  - Map Tools:', this.mapController.getToolsForClaude().length, 'tools');
-
       // Auto-show user location or Tokyo Station
-      this.showUserLocationAuto();
+      await this.showUserLocationAuto();
+
+      // Update Claude with initial map view
+      this.updateClaudeMapContext();
 
     } catch (error) {
-      console.error('❌ Failed to initialize application:', error);
+      errorLogger.log('App Initialization', error, { step: 'initialize' });
       this.showError('Initialization Error', error.message);
       this.addSystemMessage(this.i18n.t('system.initError'));
     }
@@ -130,67 +148,179 @@ class JapanDayTripApp {
    * Setup event listeners
    */
   setupEventListeners() {
-    // Send button
-    document.getElementById('sendBtn').addEventListener('click', () => {
+    // Store handler references for cleanup
+    this.eventHandlers.sendBtn = () => {
       this.handleUserInput();
-    });
+    };
 
-    // Enter key in input
-    document.getElementById('chatInput').addEventListener('keypress', (e) => {
+    this.eventHandlers.chatInputKeypress = (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         this.handleUserInput();
       }
-    });
+    };
 
-    // Language toggle
-    document.getElementById('lang-toggle').addEventListener('click', () => {
+    this.eventHandlers.langToggle = () => {
       this.toggleLanguage();
-    });
+    };
 
-    // Map controls
-    document.getElementById('recenterBtn').addEventListener('click', () => {
-      this.recenterMap();
-    });
-
-    document.getElementById('clearChatBtn').addEventListener('click', () => {
+    this.eventHandlers.clearChatBtn = () => {
       this.clearConversation();
-    });
+    };
 
-    // POI modal
-    document.getElementById('closePoiModal').addEventListener('click', () => {
+    this.eventHandlers.closePoiModal = () => {
       this.hidePoiModal();
-    });
+    };
 
-    document.getElementById('poiModal').addEventListener('click', (e) => {
+    this.eventHandlers.poiModalBackdrop = (e) => {
       if (e.target.id === 'poiModal') {
         this.hidePoiModal();
       }
-    });
+    };
 
-    // Error modal
-    document.getElementById('closeErrorModal').addEventListener('click', () => {
+    this.eventHandlers.closeErrorModal = () => {
       this.hideError();
-    });
+    };
 
-    document.getElementById('errorModal').addEventListener('click', (e) => {
+    this.eventHandlers.errorModalBackdrop = (e) => {
       if (e.target.id === 'errorModal') {
         this.hideError();
       }
-    });
+    };
+
+    // Attach event listeners
+    document.getElementById('sendBtn').addEventListener('click', this.eventHandlers.sendBtn);
+    document.getElementById('chatInput').addEventListener('keypress', this.eventHandlers.chatInputKeypress);
+    document.getElementById('lang-toggle').addEventListener('click', this.eventHandlers.langToggle);
+    document.getElementById('clearChatBtn').addEventListener('click', this.eventHandlers.clearChatBtn);
+    document.getElementById('closePoiModal').addEventListener('click', this.eventHandlers.closePoiModal);
+    document.getElementById('poiModal').addEventListener('click', this.eventHandlers.poiModalBackdrop);
+    document.getElementById('closeErrorModal').addEventListener('click', this.eventHandlers.closeErrorModal);
+    document.getElementById('errorModal').addEventListener('click', this.eventHandlers.errorModalBackdrop);
   }
 
   /**
-   * Handle user input from text field
+   * Handle user input from text field with validation and rate limiting
    */
   async handleUserInput() {
     const input = document.getElementById('chatInput');
     const message = input.value.trim();
 
-    if (!message || this.isProcessing) return;
+    // Basic validation
+    if (!message) return;
 
+    // Check if clearing is in progress
+    if (this.isClearing) {
+      return;
+    }
+
+    // Length validation
+    if (message.length > this.MAX_INPUT_LENGTH) {
+      this.showError(
+        this.i18n.t('errors.inputTooLong'),
+        this.i18n.t('errors.inputTooLongMessage', {
+          limit: this.MAX_INPUT_LENGTH,
+          current: message.length
+        })
+      );
+      return;
+    }
+
+    // Check if already processing
+    if (this.isProcessing) {
+      return;
+    }
+
+    // Rate limiting
+    const now = Date.now();
+    if (this.lastRequestTime && now - this.lastRequestTime < this.MIN_REQUEST_INTERVAL) {
+      this.showError(
+        this.i18n.t('errors.rateLimitError'),
+        this.i18n.t('errors.rateLimitMessage')
+      );
+      return;
+    }
+
+    // Sanitize input
+    const sanitized = this.sanitizeUserInput(message);
+
+    // Clear input and update timestamp
     input.value = '';
-    await this.processUserMessage(message);
+    this.lastRequestTime = now;
+
+    // Add to queue and process
+    this.requestQueue.push(sanitized);
+
+    // Process queue if not already processing
+    if (!this.activeRequest) {
+      await this.processRequestQueue();
+    }
+  }
+
+  /**
+   * Process request queue sequentially to prevent race conditions
+   */
+  async processRequestQueue() {
+    while (this.requestQueue.length > 0) {
+      const message = this.requestQueue.shift();
+
+      try {
+        this.activeRequest = this.processUserMessage(message);
+        await this.activeRequest;
+      } catch (error) {
+        errorLogger.log('Request Queue', error, { message: message.substring(0, 50) });
+
+        // Check if it's a Claude API error
+        const errorMsg = error?.message || String(error) || '';
+        const isClaudeError = errorMsg.includes('400') ||
+                             errorMsg.includes('token') ||
+                             errorMsg.includes('too large') ||
+                             errorMsg.includes('context length') ||
+                             errorMsg.includes('invalid_request_error');
+
+        if (isClaudeError) {
+          this.addSystemMessage(this.i18n.t('errors.tooMuchInfoMessage'));
+          this.showTokenOverflowError();
+        } else {
+          this.addSystemMessage(`${this.i18n.t('status.error')}: ${errorMsg}`);
+        }
+      } finally {
+        this.activeRequest = null;
+      }
+    }
+  }
+
+  /**
+   * Sanitize user input to prevent injection attacks
+   * Uses DOMPurify for comprehensive XSS protection
+   */
+  sanitizeUserInput(input) {
+    if (!input) return '';
+
+    // First apply length limit
+    let sanitized = input.substring(0, this.MAX_INPUT_LENGTH);
+
+    // Use DOMPurify to strip all HTML/script content while preserving plain text
+    // This is more secure than regex-based blacklisting
+    if (typeof DOMPurify !== 'undefined') {
+      // ALLOWED_TAGS: [] means strip all HTML tags, leaving only text
+      sanitized = DOMPurify.sanitize(sanitized, {
+        ALLOWED_TAGS: [], // No HTML tags allowed
+        ALLOWED_ATTR: [], // No attributes allowed
+        KEEP_CONTENT: true, // Preserve text content
+        ALLOW_DATA_ATTR: false
+      });
+    } else {
+      // Fallback: more aggressive character filtering
+      sanitized = sanitized
+        .replace(/[<>]/g, '') // Remove angle brackets
+        .replace(/javascript:/gi, '') // Remove javascript protocol
+        .replace(/data:/gi, '') // Remove data URIs
+        .replace(/vbscript:/gi, '') // Remove vbscript
+        .replace(/on\w+\s*=/gi, ''); // Remove event handlers
+    }
+
+    return sanitized.trim();
   }
 
   /**
@@ -284,9 +414,24 @@ class JapanDayTripApp {
       }
 
     } catch (error) {
-      console.error('Error processing message:', error);
-      this.addSystemMessage(`${this.i18n.t('status.error')}: ${error.message}`);
-      this.showError('Processing Error', error.message);
+      errorLogger.log('Message Processing', error);
+
+      // Check if it's a Claude API error (400, token overflow, etc.)
+      const errorMsg = error?.message || String(error) || '';
+      const isClaudeError = errorMsg.includes('400') ||
+                           errorMsg.includes('token') ||
+                           errorMsg.includes('too large') ||
+                           errorMsg.includes('context length') ||
+                           errorMsg.includes('invalid_request_error');
+
+      if (isClaudeError) {
+        // Show user-friendly message and modal
+        this.addSystemMessage(this.i18n.t('errors.tooMuchInfoMessage'));
+        this.showTokenOverflowError();
+      } else {
+        this.addSystemMessage(`${this.i18n.t('status.error')}: ${errorMsg}`);
+        this.showError('Processing Error', errorMsg);
+      }
     } finally {
       // Hide thinking display
       const thinkingDisplay = document.getElementById('thinkingDisplay');
@@ -311,6 +456,14 @@ class JapanDayTripApp {
       this.mapController.setMapLanguage(currentLang);
     }
 
+    // Rebuild Claude system prompt with new language
+    if (this.claudeClient) {
+      this.claudeClient.systemPrompt = this.claudeClient.buildSystemPrompt(
+        this.claudeClient.userLocation,
+        this.claudeClient.mapView
+      );
+    }
+
     // Update welcome message in chat
     const chatMessages = document.getElementById('chatMessages');
     const firstMessage = chatMessages.querySelector('.message.system-message');
@@ -325,8 +478,6 @@ class JapanDayTripApp {
         }
       }
     }
-
-    console.log('Language switched to:', currentLang);
   }
 
   /**
@@ -436,14 +587,31 @@ class JapanDayTripApp {
   }
 
   /**
-   * Format response text (markdown-like)
+   * Format response text (markdown-like) with XSS protection
    */
   formatResponse(text) {
-    return text
+    if (!text) return '';
+
+    // Convert markdown to HTML
+    let formatted = text
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
       .replace(/\*(.*?)\*/g, '<em>$1</em>')
       .replace(/`(.*?)`/g, '<code>$1</code>')
       .replace(/\n/g, '<br>');
+
+    // Sanitize with DOMPurify to prevent XSS
+    if (typeof DOMPurify !== 'undefined') {
+      return DOMPurify.sanitize(formatted, {
+        ALLOWED_TAGS: ['strong', 'em', 'code', 'br', 'p', 'ul', 'ol', 'li', 'span', 'div'],
+        ALLOWED_ATTR: ['class'], // Removed 'style' to prevent CSS-based XSS attacks
+        ALLOW_DATA_ATTR: false,
+        FORBID_ATTR: ['style'], // Explicitly forbid style attribute
+        FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed'] // Forbid dangerous tags
+      });
+    }
+
+    // Fallback if DOMPurify not loaded (shouldn't happen)
+    return this.escapeHtml(formatted);
   }
 
   /**
@@ -453,6 +621,75 @@ class JapanDayTripApp {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+  }
+
+  /**
+   * Sanitize external data (e.g., POI data from APIs) for safe display
+   * Strips all HTML and potentially dangerous content
+   * @param {string} data - Data from external source
+   * @returns {string} Sanitized plain text
+   */
+  sanitizeExternalData(data) {
+    if (!data || typeof data !== 'string') return '';
+
+    // Use DOMPurify to strip all HTML, keeping only plain text
+    if (typeof DOMPurify !== 'undefined') {
+      return DOMPurify.sanitize(data, {
+        ALLOWED_TAGS: [], // Strip all HTML tags
+        ALLOWED_ATTR: [], // Strip all attributes
+        KEEP_CONTENT: true, // Keep text content
+        ALLOW_DATA_ATTR: false,
+        RETURN_DOM: false,
+        RETURN_DOM_FRAGMENT: false
+      });
+    }
+
+    // Fallback: escape HTML entities
+    return this.escapeHtml(data);
+  }
+
+  /**
+   * Set field visibility in POI modal (shows/hides field and its label)
+   * Reusable helper to avoid code duplication
+   * @param {string} fieldId - ID of the field element
+   * @param {string} value - Value to display (empty/null hides the field)
+   */
+  setPoiFieldVisibility(fieldId, value) {
+    const dd = document.getElementById(fieldId);
+    if (!dd) return;
+
+    const dt = dd.previousElementSibling; // Get the <dt> label before the <dd>
+
+    if (value) {
+      dd.textContent = value;
+      dd.style.display = '';
+      if (dt) dt.style.display = '';
+    } else {
+      dd.style.display = 'none';
+      if (dt) dt.style.display = 'none';
+    }
+  }
+
+  /**
+   * Populate POI modal fields with data
+   * Centralized method to avoid duplication
+   * @param {Object} data - POI data object with properties
+   */
+  populatePoiFields(data) {
+    const { name, address, phone, hours, rating, price } = data;
+
+    // Set name
+    const nameElement = document.getElementById('poiName');
+    if (nameElement) {
+      nameElement.textContent = name || 'Unknown';
+    }
+
+    // Set other fields with visibility handling
+    this.setPoiFieldVisibility('poiAddress', address);
+    this.setPoiFieldVisibility('poiPhone', phone);
+    this.setPoiFieldVisibility('poiHours', hours);
+    this.setPoiFieldVisibility('poiRating', rating);
+    this.setPoiFieldVisibility('poiPrice', price);
   }
 
   /**
@@ -504,12 +741,8 @@ class JapanDayTripApp {
 
     if (tokenUsage.percentage >= 70) {
       tokenCounterDiv.classList.add('critical');
-      console.log(`[App] ⚠️ Token usage CRITICAL: ${tokenUsage.percentage}% (${tokenUsage.total.toLocaleString()}/${tokenUsage.max.toLocaleString()}) - Auto-pruning will trigger soon`);
     } else if (tokenUsage.percentage >= 50) {
       tokenCounterDiv.classList.add('warning');
-      console.log(`[App] ⚠️ Token usage WARNING: ${tokenUsage.percentage}% (${tokenUsage.total.toLocaleString()}/${tokenUsage.max.toLocaleString()})`);
-    } else {
-      console.log(`[App] Token usage: ${tokenUsage.percentage}% (${tokenUsage.total.toLocaleString()}/${tokenUsage.max.toLocaleString()})`);
     }
   }
 
@@ -522,14 +755,109 @@ class JapanDayTripApp {
   }
 
   /**
+   * Update Claude's context with current map view
+   * Includes reverse geocoding to get human-readable location
+   * Debounced to avoid excessive API calls during map movement
+   */
+  updateClaudeMapContext() {
+    if (!this.claudeClient || !this.mapController || !this.mapController.map) {
+      errorLogger.warn('Map Context Update', 'Missing dependencies for map context update', {
+        hasClaudeClient: !!this.claudeClient,
+        hasMapController: !!this.mapController,
+        hasMap: !!this.mapController?.map
+      });
+      return;
+    }
+
+    // Clear any pending update
+    if (this.mapViewUpdateTimer) {
+      clearTimeout(this.mapViewUpdateTimer);
+      this.mapViewUpdateTimer = null;
+    }
+
+    const debounceMs = this.config.DEBOUNCE_MAP_UPDATE_MS || 500;
+
+    // Debounce: wait for map to stop moving
+    this.mapViewUpdateTimer = setTimeout(async () => {
+      try {
+        const center = this.mapController.map.getCenter();
+        const zoom = this.mapController.map.getZoom();
+        const bounds = this.mapController.getBounds();
+
+        if (center && zoom && bounds) {
+          const mapView = {
+            center: { lat: center.lat, lng: center.lng },
+            zoom: zoom,
+            bounds: bounds
+          };
+
+          // Reverse geocode the map center to get human-readable location
+          try {
+            const geocodeResult = await reverseGeocode(
+              center.lng,
+              center.lat,
+              this.config.MAPBOX_ACCESS_TOKEN
+            );
+
+            if (geocodeResult) {
+              const props = geocodeResult.properties || {};
+              mapView.placeName = props.place_formatted || props.full_address || props.name;
+              mapView.name = props.name;
+              mapView.address = props.full_address;
+            }
+          } catch (error) {
+            errorLogger.warn('Map Context Update', 'Failed to reverse geocode map center', { error: error.message });
+            // Continue without place name if geocoding fails
+          }
+
+          this.claudeClient.updateMapView(mapView);
+        }
+      } catch (error) {
+        errorLogger.log('Map Context Update', error);
+      } finally {
+        this.mapViewUpdateTimer = null; // Clear reference
+      }
+    }, debounceMs);
+  }
+
+  /**
+   * Check if coordinates are within Japan's bounding box
+   * (Uses the same bounds as the map's maxBounds)
+   * @param {number} longitude
+   * @param {number} latitude
+   * @returns {boolean}
+   */
+  isLocationInJapan(longitude, latitude) {
+    // Japan's bounding box (matches map maxBounds: [[122, 24], [154, 46]])
+    // Southwest corner: [122°E, 24°N], Northeast corner: [154°E, 46°N]
+    const JAPAN_BOUNDS = {
+      west: 122,
+      south: 24,
+      east: 154,
+      north: 46
+    };
+
+    return (
+      latitude >= JAPAN_BOUNDS.south &&
+      latitude <= JAPAN_BOUNDS.north &&
+      longitude >= JAPAN_BOUNDS.west &&
+      longitude <= JAPAN_BOUNDS.east
+    );
+  }
+
+  /**
    * Show user location automatically on map load
-   * Falls back to Tokyo Station if geolocation fails
+   * Falls back to Tokyo Station if geolocation fails or location is outside Japan
    */
   async showUserLocationAuto() {
     try {
       // Try to get user's location
-      const location = await this.mapController.showUserLocation(true); // Fly to user location
-      console.log('[App] User location shown:', location);
+      const location = await this.mapController.showUserLocation();
+
+      // Check if location is within Japan's bounding box
+      if (!this.isLocationInJapan(location.longitude, location.latitude)) {
+        throw new Error('Location outside Japan');
+      }
 
       // Reverse geocode to get human-readable place name
       const geocodeResult = await reverseGeocode(
@@ -543,7 +871,6 @@ class JapanDayTripApp {
         location.placeName = props.place_formatted || props.full_address || props.name;
         location.name = props.name;
         location.address = props.full_address;
-        console.log('[App] Reverse geocoded location:', location.placeName);
       }
 
       // Store user location for Claude context
@@ -554,9 +881,7 @@ class JapanDayTripApp {
         this.claudeClient.updateUserLocation(location);
       }
     } catch (error) {
-      // Geolocation failed, show Tokyo Station as default
-      console.log('[App] Geolocation unavailable, using Tokyo Station as default');
-
+      // Geolocation failed or location outside Japan, show Tokyo Station as default
       const tokyoStation = {
         latitude: 35.681236,
         longitude: 139.767125
@@ -582,7 +907,6 @@ class JapanDayTripApp {
         tokyoStation.placeName = props.place_formatted || props.full_address || props.name;
         tokyoStation.name = props.name;
         tokyoStation.address = props.full_address;
-        console.log('[App] Reverse geocoded Tokyo Station:', tokyoStation.placeName);
       } else {
         tokyoStation.placeName = 'Tokyo Station, Tokyo, Japan';
         tokyoStation.name = 'Tokyo Station';
@@ -599,26 +923,48 @@ class JapanDayTripApp {
   }
 
   /**
-   * Clear conversation
+   * Clear conversation with atomic operations to prevent race conditions
    */
-  clearConversation() {
-    // Clear Claude history
-    this.claudeClient.clearHistory();
+  async clearConversation() {
+    // Set flag to prevent new requests during clearing
+    this.isClearing = true;
 
-    // Clear chat UI
-    const chatMessages = document.getElementById('chatMessages');
-    chatMessages.innerHTML = '';
+    try {
+      // If there's an active request, wait for it to complete first
+      // This prevents race conditions where clearing happens during tool execution
+      if (this.activeRequest) {
+        try {
+          await this.activeRequest;
+        } catch (error) {
+          // Ignore errors from the active request we're about to clear anyway
+        }
+      }
 
-    // Clear map (preserves user location marker)
-    this.mapController.clearMap();
+      // Clear any queued requests (atomically with clearing flag set)
+      this.requestQueue = [];
+      this.activeRequest = null;
 
-    // Add welcome message back
-    this.addSystemMessage(this.i18n.t('system.welcome'));
+      // Clear Claude history
+      this.claudeClient.clearHistory();
 
-    this.addSystemMessage(this.i18n.t('system.cleared'));
+      // Clear chat UI
+      const chatMessages = document.getElementById('chatMessages');
+      chatMessages.innerHTML = '';
 
-    // Reset token counter
-    this.updateTokenCounter();
+      // Clear map (preserves user location marker)
+      this.mapController.clearMap();
+
+      // Add welcome message back
+      this.addSystemMessage(this.i18n.t('system.welcome'));
+
+      this.addSystemMessage(this.i18n.t('system.cleared'));
+
+      // Reset token counter
+      this.updateTokenCounter();
+    } finally {
+      // Always unset the clearing flag
+      this.isClearing = false;
+    }
   }
 
   /**
@@ -631,7 +977,51 @@ class JapanDayTripApp {
    * @returns {string} searchId - ID of the stored search
    */
   async storeRurubuData(geojson, metadata = {}) {
-    console.log('[App] Storing Rurubu POI data:', geojson.features.length, 'features');
+    // Cap search history to prevent memory issues
+    const MAX_SEARCHES = this.config.MAX_SEARCH_HISTORY || 10;
+    if (this.searchHistory.size >= MAX_SEARCHES) {
+      // Remove oldest search
+      const oldestSearchId = Array.from(this.searchHistory.keys())[0];
+
+      // Remove from map
+      try {
+        const layerName = `search-layer-${oldestSearchId}`;
+        this.mapController.removeLayer(layerName);
+      } catch (error) {
+        errorLogger.warn('Search History Cleanup', 'Error removing old layer', { searchId: oldestSearchId, error: error.message });
+      }
+
+      // Remove from history and visible set
+      this.searchHistory.delete(oldestSearchId);
+      this.visibleSearchIds.delete(oldestSearchId);
+
+      // Clean up POIs from that search
+      for (const [name, data] of this.poiDataStore.entries()) {
+        if (data.searchId === oldestSearchId) {
+          this.poiDataStore.delete(name);
+        }
+      }
+    }
+
+    // Check total visible POI count
+    const totalVisiblePOIs = Array.from(this.visibleSearchIds)
+      .reduce((count, searchId) => {
+        const search = this.searchHistory.get(searchId);
+        return count + (search?.count || 0);
+      }, 0);
+
+    const MAX_VISIBLE_POIS = this.config.MAX_VISIBLE_POIS || 500;
+    if (totalVisiblePOIs > MAX_VISIBLE_POIS) {
+      errorLogger.warn('POI Display', 'Too many visible POIs, hiding oldest search', {
+        totalVisiblePOIs,
+        maxAllowed: MAX_VISIBLE_POIS,
+        visibleSearchCount: this.visibleSearchIds.size
+      });
+      const oldestVisible = Array.from(this.visibleSearchIds)[0];
+      if (oldestVisible) {
+        this.hideSearchResults(oldestVisible);
+      }
+    }
 
     // Generate unique search ID
     const searchId = `search_${++this.searchIdCounter}`;
@@ -654,13 +1044,21 @@ class JapanDayTripApp {
     this.searchHistory.set(searchId, searchRecord);
     this.visibleSearchIds.add(searchId);
 
-    console.log(`[App] Stored search ${searchId}: ${searchRecord.count} POIs from ${searchRecord.category} in ${searchRecord.location}`);
-    console.log(`[App] Total searches in history: ${this.searchHistory.size}`);
-
-    // Store POI details for quick lookup
+    // Store POI details for quick lookup with LRU eviction
     geojson.features.forEach(feature => {
       const name = feature.properties.name;
       if (name) {
+        // LRU eviction: remove oldest entry if at capacity
+        if (this.poiDataStore.size >= this.MAX_POI_DATA_STORE_SIZE && !this.poiDataStore.has(name)) {
+          const firstKey = this.poiDataStore.keys().next().value;
+          this.poiDataStore.delete(firstKey);
+        }
+
+        // If updating existing entry, delete and re-add to move to end (LRU)
+        if (this.poiDataStore.has(name)) {
+          this.poiDataStore.delete(name);
+        }
+
         this.poiDataStore.set(name, {
           ...feature.properties,
           searchId: searchId // Tag which search this POI came from
@@ -672,8 +1070,12 @@ class JapanDayTripApp {
     try {
       // Clear old layers first if this is the first search
       if (this.visibleSearchIds.size === 1) {
-        console.log('[App] Clearing map for first search...');
-        this.mapController.executeTool('clear_map_layers', {}).catch(() => {});
+        this.mapController.executeTool('clear_map_layers', {}).catch((error) => {
+          errorLogger.warn('Map Layers', 'Failed to clear map layers for first search', {
+            searchId,
+            error: error.message
+          });
+        });
       }
 
       // Add icon layer with layer name based on search ID
@@ -684,12 +1086,9 @@ class JapanDayTripApp {
       const bounds = this.mapController.calculateGeojsonBounds(geojson);
       if (bounds) {
         this.mapController.fitBounds(bounds);
-        console.log('[App] Fitted map bounds to show all POIs');
       }
-
-      console.log('[App] Auto-displayed search', searchId, 'on map with icon layer');
     } catch (error) {
-      console.error('[App] Failed to auto-display POIs on map:', error);
+      errorLogger.log('POI Display', error, { searchId, featureCount: geojson.features.length });
     }
 
     return searchId;
@@ -710,7 +1109,6 @@ class JapanDayTripApp {
       visible: search.visible
     }));
 
-    console.log(`[App] Listed ${searches.length} searches from history`);
     return searches;
   }
 
@@ -725,7 +1123,6 @@ class JapanDayTripApp {
     }
 
     if (search.visible) {
-      console.log(`[App] Search ${searchId} is already visible`);
       return;
     }
 
@@ -742,12 +1139,9 @@ class JapanDayTripApp {
       const bounds = this.mapController.calculateGeojsonBounds(search.geojson);
       if (bounds) {
         this.mapController.fitBounds(bounds);
-        console.log(`[App] Fitted map bounds to show search ${searchId}`);
       }
-
-      console.log(`[App] Showed search ${searchId} on map with icon layer`);
     } catch (error) {
-      console.error(`[App] Failed to show search ${searchId}:`, error);
+      errorLogger.log('Show Search Results', error, { searchId });
       throw error;
     }
   }
@@ -763,7 +1157,6 @@ class JapanDayTripApp {
     }
 
     if (!search.visible) {
-      console.log(`[App] Search ${searchId} is already hidden`);
       return;
     }
 
@@ -775,9 +1168,8 @@ class JapanDayTripApp {
     try {
       const layerName = `search-layer-${searchId}`;
       this.mapController.removeLayer(layerName);
-      console.log(`[App] Hid search ${searchId} from map (removed layer)`);
     } catch (error) {
-      console.error(`[App] Failed to hide search ${searchId}:`, error);
+      errorLogger.log('Hide Search Results', error, { searchId });
       throw error;
     }
   }
@@ -785,14 +1177,13 @@ class JapanDayTripApp {
   /**
    * Clear all searches from history and map
    */
-  clearAllSearches() {
-    console.log(`[App] Clearing all ${this.searchHistory.size} searches from history`);
-
+  async clearAllSearches() {
     // Clear all map layers
     try {
-      this.mapController.executeTool('clear_map_layers', {});
+      await this.mapController.executeTool('clear_map_layers', {});
     } catch (error) {
       // Ignore errors if there are no layers to clear
+      errorLogger.warn('Clear Searches', 'Failed to clear map layers', { error: error.message });
     }
 
     // Clear data structures
@@ -800,8 +1191,6 @@ class JapanDayTripApp {
     this.visibleSearchIds.clear();
     this.poiDataStore.clear();
     this.searchIdCounter = 0;
-
-    console.log('[App] All searches cleared');
   }
 
   /**
@@ -854,6 +1243,63 @@ class JapanDayTripApp {
           properties: {},
           required: []
         }
+      },
+      {
+        name: 'get_poi_summary',
+        description: 'Get a lightweight summary list of stored POIs (across all searches). Returns just id, name, category, genre, rating, price, time, coordinates. Defaults to top 100 POIs sorted by rating. Use filters (category, min_rating, search_text, open_after) to narrow results. If total_available > count in response, use filters instead of increasing limit to avoid token overflow.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            category: {
+              type: 'string',
+              description: 'Filter by category: eat, see, play, buy, cafe, onsen, nightlife, other. If null, returns all categories.',
+              enum: ['eat', 'see', 'play', 'buy', 'cafe', 'onsen', 'nightlife', 'other']
+            },
+            min_rating: {
+              type: 'number',
+              description: 'Minimum rating filter (0-5). Only return POIs with rating >= this value.'
+            },
+            search_text: {
+              type: 'string',
+              description: 'Text search query. Searches in POI name, genre, and address. Case-insensitive partial matching.'
+            },
+            open_after: {
+              type: 'string',
+              description: 'Filter POIs open after this time (e.g., "21:00" for 9pm). Uses best-effort parsing of time strings. Handles formats like "9:00-21:00", "24時間営業", etc. POIs with unparseable time strings are included (to be safe).',
+              pattern: '^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$'
+            },
+            sort_by: {
+              type: 'string',
+              description: 'Sort results by: "rating" (highest first) or "name" (alphabetical)',
+              enum: ['rating', 'name'],
+              default: 'rating'
+            },
+            limit: {
+              type: 'number',
+              description: 'Maximum number of results to return. Default: 100, Max: 200. Use filters (category, min_rating, search_text) to narrow results instead of requesting all POIs.',
+              default: 100,
+              maximum: 200
+            }
+          },
+          required: []
+        }
+      },
+      {
+        name: 'get_poi_details',
+        description: 'Get FULL details for specific POIs by their IDs. Returns tel, address, summary, photos, hours, price, coordinates - everything. Use this AFTER get_poi_summary to get complete information for POIs you want to mention or recommend. Only fetches POIs you explicitly request by ID.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            ids: {
+              type: 'array',
+              items: {
+                type: 'string'
+              },
+              description: 'Array of POI IDs to fetch details for (e.g., ["12345", "67890"]). Get these IDs from get_poi_summary results.'
+            }
+          },
+          required: ['ids']
+        }
       }
     ];
   }
@@ -894,16 +1340,271 @@ class JapanDayTripApp {
       locationGroups.push(locationGroup);
     });
 
-    console.log(`[App] Retrieved ${locationGroups.length} location groups with POIs for Claude`);
     return locationGroups;
+  }
+
+  /**
+   * Parse time string and extract closing time
+   * Handles common Japanese time formats
+   * @param {string} timeStr - Time string like "9:00-21:00" or "24時間営業"
+   * @returns {Object|null} {closes_at: "21:00", is_24h: boolean} or null if unparseable
+   */
+  parseTimeString(timeStr) {
+    if (!timeStr || typeof timeStr !== 'string') return null;
+
+    const str = timeStr.trim();
+
+    // Check for 24-hour places
+    if (str.includes('24時間') || str.includes('24h') || str.includes('24H')) {
+      return { closes_at: '24:00', is_24h: true };
+    }
+
+    // Try to extract closing time from common formats
+    // Formats: "9:00-21:00", "9:00~21:00", "9時-21時", "11:00~14:00, 17:00~22:00"
+
+    // Match HH:MM-HH:MM or HH:MM~HH:MM
+    const match1 = str.match(/(\d{1,2}):(\d{2})\s*[-~～]\s*(\d{1,2}):(\d{2})/g);
+    if (match1 && match1.length > 0) {
+      // Get the last time range (handles lunch/dinner splits)
+      const lastRange = match1[match1.length - 1];
+      const parts = lastRange.match(/(\d{1,2}):(\d{2})\s*[-~～]\s*(\d{1,2}):(\d{2})/);
+      if (parts && parts.length >= 5 && parts[3] && parts[4]) {
+        const closeHour = parts[3].padStart(2, '0');
+        const closeMin = parts[4];
+        return { closes_at: `${closeHour}:${closeMin}`, is_24h: false };
+      }
+    }
+
+    // Match Japanese format: "9時-21時"
+    const match2 = str.match(/(\d{1,2})時\s*[-~～]\s*(\d{1,2})時/g);
+    if (match2 && match2.length > 0) {
+      const lastRange = match2[match2.length - 1];
+      const parts = lastRange.match(/(\d{1,2})時\s*[-~～]\s*(\d{1,2})時/);
+      if (parts && parts.length >= 3 && parts[2]) {
+        const closeHour = parts[2].padStart(2, '0');
+        return { closes_at: `${closeHour}:00`, is_24h: false };
+      }
+    }
+
+    // Couldn't parse
+    return null;
+  }
+
+  /**
+   * Check if a place is open after a specific time
+   * @param {string} timeStr - Time string from POI
+   * @param {string} targetTime - Target time like "21:00"
+   * @returns {boolean} True if open after target time (or unknown)
+   */
+  isOpenAfter(timeStr, targetTime) {
+    const parsed = this.parseTimeString(timeStr);
+    return this.isOpenAfterParsed(parsed, targetTime);
+  }
+
+  /**
+   * Check if a place is open after a specific time using pre-parsed time object
+   * Performance optimized version that avoids re-parsing
+   * @param {Object|null} parsed - Parsed time object from parseTimeString()
+   * @param {string} targetTime - Target time like "21:00"
+   * @returns {boolean} True if open after target time (or unknown)
+   */
+  isOpenAfterParsed(parsed, targetTime) {
+    // If can't parse, include it (let Claude decide)
+    if (!parsed) return true;
+
+    // 24-hour places are always open
+    if (parsed.is_24h) return true;
+
+    // Compare closing time with target time
+    // Convert to minutes for comparison
+    const [targetH, targetM] = targetTime.split(':').map(Number);
+    const targetMinutes = targetH * 60 + targetM;
+
+    const [closeH, closeM] = parsed.closes_at.split(':').map(Number);
+    const closeMinutes = closeH * 60 + closeM;
+
+    // Open if closes after target time
+    return closeMinutes > targetMinutes;
+  }
+
+  /**
+   * Get lightweight POI summary list across ALL stored POIs
+   * Returns just id, name, category, rating for token efficiency
+   * @param {Object} options - Filter options
+   * @returns {Object} Summary list of POIs
+   */
+  getPOISummary(options = {}) {
+    const {
+      category = null,
+      min_rating = null,
+      search_text = null,
+      open_after = null, // NEW: Filter by opening hours (e.g., "21:00")
+      sort_by = 'rating', // rating | name
+      limit = 100
+    } = options;
+
+    // Cap limit to prevent token overflow
+    const cappedLimit = Math.min(limit, 200);
+
+    // Pre-compute search string (avoid repeated toLowerCase calls)
+    const searchLower = search_text ? search_text.toLowerCase() : null;
+
+    const allPOIs = [];
+
+    // Collect POIs from all visible search layers
+    this.visibleSearchIds.forEach(searchId => {
+      const search = this.searchHistory.get(searchId);
+      if (!search || !search.geojson) return;
+
+      // Filter by category if specified (category filter at search level)
+      if (category && search.category !== category) return;
+
+      search.geojson.features.forEach(feature => {
+        const props = feature.properties;
+        const rating = props.rank || props.rating || 0;
+
+        // Apply rating filter (early exit for performance)
+        if (min_rating && rating < min_rating) return;
+
+        // Text search using cached lowercase strings
+        if (searchLower) {
+          // Use cached _searchText or compute once
+          if (!props._searchText) {
+            props._searchText = `${props.name || ''} ${props.sgenreName || ''} ${props.address || ''}`.toLowerCase();
+          }
+
+          if (!props._searchText.includes(searchLower)) {
+            return;
+          }
+        }
+
+        // Time filter using cached parsed time
+        if (open_after && props.time) {
+          // Parse and cache time on first access
+          if (props._parsedTime === undefined) {
+            props._parsedTime = this.parseTimeString(props.time);
+          }
+
+          // Use cached parsed time for comparison
+          if (!props._parsedTime || !this.isOpenAfterParsed(props._parsedTime, open_after)) {
+            return;
+          }
+        }
+
+        // Add lightweight summary with full-precision coordinates
+        allPOIs.push({
+          id: props.id,
+          name: props.name || 'Unknown',
+          category: search.category,
+          genre: props.sgenreName || null,
+          rating: rating,
+          price: props.price || null,
+          time: props.time || null,
+          coordinates: feature.geometry?.coordinates || null
+        });
+      });
+    });
+
+    // Sort
+    if (sort_by === 'rating') {
+      allPOIs.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+    } else if (sort_by === 'name') {
+      allPOIs.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    }
+
+    // Limit results
+    const total = allPOIs.length;
+    const results = allPOIs.slice(0, cappedLimit);
+
+    const response = {
+      pois: results,
+      count: results.length,
+      total_available: total,
+      filters_applied: {
+        category,
+        min_rating,
+        search_text,
+        sort_by,
+        limit: cappedLimit
+      }
+    };
+
+    // Add message if results were capped
+    if (total > cappedLimit) {
+      response.message = `Showing top ${cappedLimit} POIs (sorted by ${sort_by}). ${total - cappedLimit} more available. Use filters (category, min_rating, search_text, open_after) to narrow results instead of increasing limit.`;
+    }
+
+    return response;
+  }
+
+  /**
+   * Get full details for specific POIs by ID
+   * @param {Array<string>} ids - POI IDs to fetch
+   * @returns {Object} Full POI details
+   */
+  getPOIDetails(ids = []) {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return {
+        pois: [],
+        count: 0,
+        message: 'No POI IDs provided'
+      };
+    }
+
+    const detailedPOIs = [];
+    const idsSet = new Set(ids);
+
+    // Search through all visible search layers
+    this.visibleSearchIds.forEach(searchId => {
+      const search = this.searchHistory.get(searchId);
+      if (!search || !search.geojson) return;
+
+      search.geojson.features.forEach(feature => {
+        const props = feature.properties;
+
+        // Check if this POI is in the requested IDs
+        if (idsSet.has(props.id)) {
+          const [lng, lat] = feature.geometry.coordinates;
+
+          // Return FULL details
+          detailedPOIs.push({
+            id: props.id,
+            name: props.name || 'Unknown',
+            kana: props.kana || null,
+            address: props.address || null,
+            category: search.category,
+            coordinates: [lng, lat],
+            rating: props.rank || props.rating || null,
+            time: props.time || null,
+            tel: props.tel || null,
+            price: props.price || null,
+            summary: props.summary || null,
+            genre: props.sgenreName || null,
+            photo: props.photo || null,
+            photos: props.photos || [],
+            lgenre: props.lgenre || null,
+            mgenre: props.mgenre || null,
+            sgenre: props.sgenre || null
+          });
+
+          // Remove from set once found
+          idsSet.delete(props.id);
+        }
+      });
+    });
+
+    return {
+      pois: detailedPOIs,
+      count: detailedPOIs.length,
+      requested: ids.length,
+      not_found: Array.from(idsSet)
+    };
   }
 
   /**
    * Execute a search history tool
    */
   async executeSearchHistoryTool(toolName, args) {
-    console.log(`[App] Executing search history tool: ${toolName}`, args);
-
     try {
       switch (toolName) {
         case 'list_search_history': {
@@ -917,7 +1618,7 @@ class JapanDayTripApp {
         }
 
         case 'show_search_results': {
-          this.showSearchResults(args.search_id);
+          await this.showSearchResults(args.search_id);
           return {
             content: [{
               type: 'text',
@@ -937,11 +1638,31 @@ class JapanDayTripApp {
         }
 
         case 'clear_all_searches': {
-          this.clearAllSearches();
+          await this.clearAllSearches();
           return {
             content: [{
               type: 'text',
               text: 'All searches have been cleared from history and map'
+            }]
+          };
+        }
+
+        case 'get_poi_summary': {
+          const summary = this.getPOISummary(args);
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify(summary, null, 2)
+            }]
+          };
+        }
+
+        case 'get_poi_details': {
+          const details = this.getPOIDetails(args.ids);
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify(details, null, 2)
             }]
           };
         }
@@ -979,6 +1700,7 @@ class JapanDayTripApp {
 
   /**
    * Translate POI data from Japanese to English using Claude (direct API call)
+   * Uses LRU cache to avoid redundant translations
    */
   async translatePoiData(properties) {
     try {
@@ -993,8 +1715,17 @@ class JapanDayTripApp {
 
       // Skip translation if no text to translate
       if (!fieldsToTranslate.name && !fieldsToTranslate.summary) {
-        console.log('[App] No text to translate, returning original properties');
         return properties;
+      }
+
+      // Check cache first (use POI ID or name as key)
+      const cacheKey = properties.id || fieldsToTranslate.name;
+      if (this.translationCache.has(cacheKey)) {
+        // Move to end (LRU: mark as recently used)
+        const cached = this.translationCache.get(cacheKey);
+        this.translationCache.delete(cacheKey);
+        this.translationCache.set(cacheKey, cached);
+        return { ...properties, ...cached };
       }
 
 
@@ -1031,7 +1762,9 @@ Rating: [translated rating]`;
         const responseText = response.text || '';
 
         if (!responseText) {
-          console.warn('[App] Empty response from translation, returning original');
+          errorLogger.warn('POI Translation', 'Empty response from translation service', {
+            poiName: properties.title || properties.name
+          });
           return properties;
         }
 
@@ -1055,6 +1788,26 @@ Rating: [translated rating]`;
           }
         }
 
+        // Store in cache with LRU eviction
+        const cacheKey = properties.id || fieldsToTranslate.name;
+
+        // Evict oldest entry if cache is full
+        if (this.translationCache.size >= this.MAX_TRANSLATION_CACHE_SIZE) {
+          const firstKey = this.translationCache.keys().next().value;
+          this.translationCache.delete(firstKey);
+        }
+
+        // Store only the translated fields (not the full properties object)
+        this.translationCache.set(cacheKey, {
+          name: translated.name,
+          title: translated.title,
+          address: translated.address,
+          summary: translated.summary,
+          time: translated.time,
+          price: translated.price,
+          rank: translated.rank
+        });
+
         return translated;
       } finally {
         // Always restore the conversation history
@@ -1062,20 +1815,29 @@ Rating: [translated rating]`;
       }
 
     } catch (error) {
-      console.error('[App] Translation failed:', error);
+      errorLogger.log('POI Translation', error, { poiName: properties.title || properties.name });
       // Return original properties if translation fails
       return properties;
     }
   }
 
   /**
-   * Show POI details modal
+   * Show POI details modal with null safety and comprehensive error handling
    */
   async showPoiModal(properties) {
+    try {
+      // Validate properties
+      if (!properties || typeof properties !== 'object') {
+        errorLogger.warn('POI Modal', 'Invalid properties provided to showPoiModal', { properties });
+        return;
+      }
 
-    // Show modal immediately with loading state if translation needed
-    const modal = document.getElementById('poiModal');
-    const modalBody = modal.querySelector('.poi-modal-body');
+      // Get modal with null check
+      const modal = safeGetElement('poiModal');
+      if (!modal) {
+        errorLogger.warn('POI Modal', 'POI modal element not found in DOM');
+        return;
+      }
 
     if (this.i18n.isEnglish()) {
       // Show modal with loading indicator
@@ -1109,24 +1871,31 @@ Rating: [translated rating]`;
     let fullData = null;
     const nameKey = properties.title || properties.name;
 
-    // Debug: Show what we're looking for and what's available
-
     if (nameKey) {
+      let lookupKey = null;
+
       // Try exact match first
-      fullData = this.poiDataStore.get(nameKey);
+      if (this.poiDataStore.has(nameKey)) {
+        lookupKey = nameKey;
+        fullData = this.poiDataStore.get(nameKey);
+      }
 
       // If not found and name has English in parentheses, try without it
       if (!fullData && nameKey.includes('(')) {
         const japaneseOnly = nameKey.replace(/\s*\([^)]*\)\s*$/, '').trim();
-        fullData = this.poiDataStore.get(japaneseOnly);
+        if (this.poiDataStore.has(japaneseOnly)) {
+          lookupKey = japaneseOnly;
+          fullData = this.poiDataStore.get(japaneseOnly);
+        }
       }
 
-      if (fullData) {
-        console.log('[App] ✓ Found full Rurubu data for this POI');
+      if (fullData && lookupKey) {
+        // LRU: Move accessed item to end by deleting and re-adding
+        this.poiDataStore.delete(lookupKey);
+        this.poiDataStore.set(lookupKey, fullData);
+
         // Merge full data with properties (full data takes precedence)
         properties = { ...properties, ...fullData };
-      } else {
-        console.log('[App] ✗ No full data found for:', nameKey);
       }
     }
 
@@ -1135,7 +1904,15 @@ Rating: [translated rating]`;
 
     // Translate to English if language is set to English
     if (this.i18n.isEnglish()) {
-      properties = await this.translatePoiData(properties);
+      try {
+        properties = await this.translatePoiData(properties);
+      } catch (error) {
+        errorLogger.warn('POI Modal', 'Translation failed, using original data', {
+          poiName: properties.title || properties.name,
+          error: error.message
+        });
+        // Continue with original properties if translation fails
+      }
     }
 
     // Handle both property formats:
@@ -1149,44 +1926,48 @@ Rating: [translated rating]`;
     }
 
     // ONLY use Rurubu data fields (never use Claude's description)
-    const description = properties.summary || ''; // Only Rurubu's summary
-    const phone = properties.tel || ''; // Only Rurubu's tel
-    const hours = properties.time || ''; // Only Rurubu's time
-    const rating = properties.rank || ''; // Only Rurubu's rank
-    const price = properties.price || ''; // Only Rurubu's price
-    const address = properties.address || ''; // Only Rurubu's address
+    // Sanitize all external POI data as defense in depth (even though textContent is safe)
+    const description = this.sanitizeExternalData(properties.summary || '');
+    const phone = this.sanitizeExternalData(properties.tel || '');
+    const hours = this.sanitizeExternalData(properties.time || '');
+    const rating = this.sanitizeExternalData(properties.rank || '');
+    const price = this.sanitizeExternalData(properties.price || '');
+    const address = this.sanitizeExternalData(properties.address || '');
+    name = this.sanitizeExternalData(name);
 
-    // Populate modal with POI data
-    document.getElementById('poiName').textContent = name;
+    // Populate modal fields using centralized method
+    this.populatePoiFields({
+      name,
+      address,
+      phone,
+      hours,
+      rating,
+      price
+    });
 
-    // Helper function to show/hide a field and its label
-    const setFieldVisibility = (fieldId, value) => {
-      const dd = document.getElementById(fieldId);
-      const dt = dd.previousElementSibling; // Get the <dt> label before the <dd>
-
-      if (value) {
-        dd.textContent = value;
-        dd.style.display = '';
-        dt.style.display = '';
-      } else {
-        dd.style.display = 'none';
-        dt.style.display = 'none';
-      }
-    };
-
-    // Show/hide fields based on availability (only Rurubu data)
-    setFieldVisibility('poiAddress', address);
-    setFieldVisibility('poiPhone', phone);
-    setFieldVisibility('poiHours', hours);
-    setFieldVisibility('poiRating', rating);
-    setFieldVisibility('poiPrice', price);
-
-    // Handle photo
+    // Handle photo with error handling
     const photoDiv = document.getElementById('poiPhoto');
     const photoImg = document.getElementById('poiPhotoImg');
     if (properties.photo) {
+      // Reset any previous error handlers
+      photoImg.onerror = null;
+      photoImg.onload = null;
+
+      // Set up error handler before setting src
+      photoImg.onerror = () => {
+        errorLogger.warn('POI Modal', 'Failed to load photo', {
+          poiName: properties.title || properties.name,
+          photoUrl: properties.photo
+        });
+        photoDiv.style.display = 'none';
+      };
+
+      // Show photo on successful load
+      photoImg.onload = () => {
+        photoDiv.style.display = 'block';
+      };
+
       photoImg.src = properties.photo;
-      photoDiv.style.display = 'block';
     } else {
       photoDiv.style.display = 'none';
     }
@@ -1200,14 +1981,37 @@ Rating: [translated rating]`;
       summaryDiv.style.display = 'none';
     }
 
-    // Remove loading overlay if it exists
-    const loadingOverlay = document.getElementById('poiLoadingOverlay');
-    if (loadingOverlay) {
-      loadingOverlay.remove();
-    }
+      // Remove loading overlay if it exists
+      const loadingOverlay = document.getElementById('poiLoadingOverlay');
+      if (loadingOverlay) {
+        loadingOverlay.remove();
+      }
 
-    // Show modal (already shown if translating, but show again in case it wasn't)
-    modal.style.display = 'flex';
+      // Show modal (already shown if translating, but show again in case it wasn't)
+      modal.style.display = 'flex';
+    } catch (error) {
+      errorLogger.log('POI Modal', error, {
+        poiName: properties?.title || properties?.name || 'unknown'
+      });
+
+      // Clean up loading overlay on error
+      const loadingOverlay = document.getElementById('poiLoadingOverlay');
+      if (loadingOverlay) {
+        loadingOverlay.remove();
+      }
+
+      // Hide modal on error
+      const modal = document.getElementById('poiModal');
+      if (modal) {
+        modal.style.display = 'none';
+      }
+
+      // Show user-friendly error message
+      this.showError(
+        this.i18n.t('errors.error'),
+        this.i18n.t('errors.unknown')
+      );
+    }
   }
 
   /**
@@ -1219,6 +2023,14 @@ Rating: [translated rating]`;
     if (loadingOverlay) {
       loadingOverlay.remove();
     }
+
+    // Clean up photo event handlers to prevent memory leaks
+    const photoImg = document.getElementById('poiPhotoImg');
+    if (photoImg) {
+      photoImg.onerror = null;
+      photoImg.onload = null;
+    }
+
     document.getElementById('poiModal').style.display = 'none';
   }
 
@@ -1240,16 +2052,201 @@ Rating: [translated rating]`;
   }
 
   /**
+   * Show token overflow error modal with Clear Chat button
+   */
+  showTokenOverflowError() {
+    const modal = document.getElementById('errorModal');
+    const modalBody = document.getElementById('errorMessage');
+    const modalHeader = document.querySelector('#errorModal h3');
+    const closeButton = document.getElementById('closeErrorModal');
+
+    // Set title and message
+    modalHeader.textContent = this.i18n.t('errors.tooMuchInfo');
+    modalBody.textContent = this.i18n.t('errors.tooMuchInfoMessage');
+
+    // Hide close button
+    closeButton.style.display = 'none';
+
+    // Add Clear Chat button if not already added
+    let clearButton = document.getElementById('errorClearChatBtn');
+    if (!clearButton) {
+      clearButton = document.createElement('button');
+      clearButton.id = 'errorClearChatBtn';
+      clearButton.className = 'modal-btn';
+      clearButton.style.marginTop = '20px';
+      clearButton.style.padding = '10px 20px';
+      clearButton.style.backgroundColor = '#ff6b35';
+      clearButton.style.color = 'white';
+      clearButton.style.border = 'none';
+      clearButton.style.borderRadius = '8px';
+      clearButton.style.cursor = 'pointer';
+      clearButton.style.fontSize = '14px';
+      clearButton.style.fontWeight = 'bold';
+
+      // Store handler reference for cleanup
+      this.eventHandlers.errorClearChatBtn = async () => {
+        await this.clearConversation();
+        this.hideTokenOverflowError();
+      };
+
+      clearButton.addEventListener('click', this.eventHandlers.errorClearChatBtn);
+
+      modalBody.appendChild(clearButton);
+    }
+
+    clearButton.textContent = this.i18n.t('errors.clearChatButton');
+
+    // Disable input
+    const chatInput = document.getElementById('chatInput');
+    const sendBtn = document.getElementById('sendBtn');
+    chatInput.disabled = true;
+    sendBtn.disabled = true;
+    chatInput.style.opacity = '0.5';
+    sendBtn.style.opacity = '0.5';
+
+    modal.style.display = 'flex';
+  }
+
+  /**
+   * Hide token overflow error modal and re-enable input
+   */
+  hideTokenOverflowError() {
+    const modal = document.getElementById('errorModal');
+    const closeButton = document.getElementById('closeErrorModal');
+
+    // Re-enable input
+    const chatInput = document.getElementById('chatInput');
+    const sendBtn = document.getElementById('sendBtn');
+    chatInput.disabled = false;
+    sendBtn.disabled = false;
+    chatInput.style.opacity = '1';
+    sendBtn.style.opacity = '1';
+
+    // Show close button again
+    closeButton.style.display = 'block';
+
+    modal.style.display = 'none';
+  }
+
+  /**
    * Hide error modal
    */
   hideError() {
     document.getElementById('errorModal').style.display = 'none';
   }
+
+  /**
+   * Remove all event listeners to prevent memory leaks
+   */
+  removeEventListeners() {
+    // Remove DOM event listeners
+    const sendBtn = document.getElementById('sendBtn');
+    const chatInput = document.getElementById('chatInput');
+    const langToggle = document.getElementById('lang-toggle');
+    const clearChatBtn = document.getElementById('clearChatBtn');
+    const closePoiModal = document.getElementById('closePoiModal');
+    const poiModal = document.getElementById('poiModal');
+    const closeErrorModal = document.getElementById('closeErrorModal');
+    const errorModal = document.getElementById('errorModal');
+    const errorClearChatBtn = document.getElementById('errorClearChatBtn');
+
+    if (sendBtn && this.eventHandlers.sendBtn) {
+      sendBtn.removeEventListener('click', this.eventHandlers.sendBtn);
+    }
+    if (chatInput && this.eventHandlers.chatInputKeypress) {
+      chatInput.removeEventListener('keypress', this.eventHandlers.chatInputKeypress);
+    }
+    if (langToggle && this.eventHandlers.langToggle) {
+      langToggle.removeEventListener('click', this.eventHandlers.langToggle);
+    }
+    if (clearChatBtn && this.eventHandlers.clearChatBtn) {
+      clearChatBtn.removeEventListener('click', this.eventHandlers.clearChatBtn);
+    }
+    if (closePoiModal && this.eventHandlers.closePoiModal) {
+      closePoiModal.removeEventListener('click', this.eventHandlers.closePoiModal);
+    }
+    if (poiModal && this.eventHandlers.poiModalBackdrop) {
+      poiModal.removeEventListener('click', this.eventHandlers.poiModalBackdrop);
+    }
+    if (closeErrorModal && this.eventHandlers.closeErrorModal) {
+      closeErrorModal.removeEventListener('click', this.eventHandlers.closeErrorModal);
+    }
+    if (errorModal && this.eventHandlers.errorModalBackdrop) {
+      errorModal.removeEventListener('click', this.eventHandlers.errorModalBackdrop);
+    }
+    if (errorClearChatBtn && this.eventHandlers.errorClearChatBtn) {
+      errorClearChatBtn.removeEventListener('click', this.eventHandlers.errorClearChatBtn);
+    }
+
+    // Remove map event listeners
+    if (this.mapController && this.mapController.map && this.mapEventHandlers.moveend) {
+      this.mapController.map.off('moveend', this.mapEventHandlers.moveend);
+    }
+
+    // Clean up photo image event handlers
+    const photoImg = document.getElementById('poiPhotoImg');
+    if (photoImg) {
+      photoImg.onerror = null;
+      photoImg.onload = null;
+    }
+
+    // Clear handler references
+    this.eventHandlers = {};
+    this.mapEventHandlers = {};
+  }
+
+  /**
+   * Cleanup method to prevent memory leaks
+   * Call when app is being destroyed or page is unloading
+   */
+  async cleanup() {
+    // Remove all event listeners first
+    this.removeEventListeners();
+
+    // Clear debounce timer
+    if (this.mapViewUpdateTimer) {
+      clearTimeout(this.mapViewUpdateTimer);
+      this.mapViewUpdateTimer = null;
+    }
+
+    // Stop thinking simulator
+    if (this.thinkingSimulator) {
+      this.thinkingSimulator.stopThinking();
+    }
+
+    // Clear all searches and data
+    await this.clearAllSearches();
+
+    // Destroy map controller
+    if (this.mapController) {
+      this.mapController.destroy();
+      this.mapController = null;
+    }
+
+    // Clear Claude client references
+    if (this.claudeClient) {
+      this.claudeClient.clearHistory();
+      this.claudeClient = null;
+    }
+
+    // Clear Rurubu MCP
+    this.rurubuMCP = null;
+
+    // Clear caches
+    this.translationCache.clear();
+    this.poiDataStore.clear();
+  }
 }
 
 // Initialize app when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
-  console.log('DOM Content Loaded');
   window.app = new JapanDayTripApp();
   window.app.initialize();
+});
+
+// Cleanup on page unload to prevent memory leaks
+window.addEventListener('beforeunload', () => {
+  if (window.app) {
+    window.app.cleanup();
+  }
 });

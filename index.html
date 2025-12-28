@@ -19,6 +19,9 @@
   <!-- Mapbox Map Tools MCP Library -->
   <script src="https://unpkg.com/mapbox-map-tools-mcp@latest/src/mapbox-map-tools.js"></script>
 
+  <!-- DOMPurify for XSS Protection -->
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
+
   <!-- Application Styles -->
   <link rel="stylesheet" href="./styles/main.css">
 </head>
@@ -91,10 +94,6 @@
 
       <!-- Map Controls -->
       <div class="map-controls">
-        <button id="recenterBtn" class="control-btn" title="Recenter to your location">
-          <span class="icon">🎯</span>
-          <span class="label" data-i18n="recenter">現在地</span>
-        </button>
         <button id="clearChatBtn" class="control-btn" title="Clear conversation">
           <span class="icon">💬</span>
           <span class="label" data-i18n="clearChat">チャットをクリア</span>

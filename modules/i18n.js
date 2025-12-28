@@ -41,6 +41,7 @@ export class I18n {
           callingMapbox: 'Querying Mapbox services...',
           callingRurubu: 'Searching Rurubu database...',
           visualizing: 'Updating map...',
+          optimizing: 'Optimizing conversation history...',
           ready: 'Ready',
           error: 'Error occurred'
         },
@@ -83,7 +84,15 @@ See README.md for setup instructions.`,
           noApiKey: 'API key not configured',
           networkError: 'Network error. Please check your connection.',
           timeout: 'Request timed out',
-          unknown: 'An unknown error occurred'
+          unknown: 'An unknown error occurred',
+          inputTooLong: 'Input Too Long',
+          inputTooLongMessage: 'Please limit your message to {limit} characters. Current length: {current}',
+          rateLimitError: 'Too Fast',
+          rateLimitMessage: 'Please wait a moment before sending another message.',
+          error: 'Error',
+          tooMuchInfo: 'Too Much Information',
+          tooMuchInfoMessage: 'There is too much information for Claude to process. Please clear the chat and start a new conversation.',
+          clearChatButton: 'Clear Chat'
         },
 
         // POI Modal labels
@@ -130,6 +139,7 @@ See README.md for setup instructions.`,
           callingMapbox: 'Mapboxサービスにクエリ中...',
           callingRurubu: 'るるぶデータベースを検索中...',
           visualizing: '地図を更新中...',
+          optimizing: '会話履歴を最適化中...',
           ready: '準備完了',
           error: 'エラーが発生しました'
         },
@@ -172,7 +182,15 @@ config.jsでAPIキーを更新してください:
           noApiKey: 'APIキーが設定されていません',
           networkError: 'ネットワークエラー。接続を確認してください。',
           timeout: 'リクエストがタイムアウトしました',
-          unknown: '不明なエラーが発生しました'
+          unknown: '不明なエラーが発生しました',
+          inputTooLong: '入力が長すぎます',
+          inputTooLongMessage: 'メッセージは{limit}文字以内にしてください。現在の長さ：{current}文字',
+          rateLimitError: '送信が早すぎます',
+          rateLimitMessage: '少し待ってから再度送信してください。',
+          error: 'エラー',
+          tooMuchInfo: '情報が多すぎます',
+          tooMuchInfoMessage: 'Claudeが処理できる情報量を超えています。チャットをクリアして新しい会話を始めてください。',
+          clearChatButton: 'チャットをクリア'
         },
 
         // POI Modal labels
@@ -188,11 +206,12 @@ config.jsでAPIキーを更新してください:
   }
 
   /**
-   * Get translation for a key
+   * Get translation for a key with optional variable substitution
    * @param {string} key - Translation key (e.g., 'title' or 'categories.eat')
+   * @param {Object} vars - Optional variables to substitute (e.g., {limit: 2000})
    * @returns {string} Translated text
    */
-  t(key) {
+  t(key, vars = {}) {
     const keys = key.split('.');
     let value = this.translations[this.currentLang];
 
@@ -205,7 +224,16 @@ config.jsでAPIキーを更新してください:
       }
     }
 
-    return value || key;
+    let result = value || key;
+
+    // Replace template variables {varName} with values
+    if (typeof result === 'string' && Object.keys(vars).length > 0) {
+      Object.keys(vars).forEach(varName => {
+        result = result.replace(new RegExp(`\\{${varName}\\}`, 'g'), vars[varName]);
+      });
+    }
+
+    return result;
   }
 
   /**
@@ -219,7 +247,6 @@ config.jsでAPIキーを更新してください:
     }
 
     this.currentLang = lang;
-    console.log(`Language set to: ${lang}`);
   }
 
   /**
