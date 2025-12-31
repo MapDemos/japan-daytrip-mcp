@@ -1957,13 +1957,19 @@ export class MapController {
         }
 
         // Store in search history (if app reference is available)
+        let searchId = null;
         if (this.app && this.app.storeRurubuData) {
           const metadata = {
             category: category,
             location: query,  // Use the search query as location
             source: 'searchbox'  // Mark as SearchBox data
           };
-          await this.app.storeRurubuData(geojson, metadata);
+          searchId = await this.app.storeRurubuData(geojson, metadata);
+
+          // Auto-display search_location results (infrastructure searches)
+          if (searchId && this.app.showSearchResults) {
+            await this.app.showSearchResults(searchId);
+          }
         } else {
           // Fallback: display using executeAddPointsAsMarkers if app is not available
           const points = result.results.map(poi => ({
@@ -1980,12 +1986,13 @@ export class MapController {
           await this.executeAddPointsAsMarkers({ points });
         }
 
-        // Return summary (no need for Claude to call add_points_to_map manually)
+        // Return summary with search_id
         return {
           content: [{
             type: 'text',
             text: JSON.stringify({
               success: true,
+              search_id: searchId,
               query: query,
               count: result.results.length,
               results: result.results,
