@@ -1493,7 +1493,7 @@ class JapanDayTripApp {
 
         // Add lightweight summary with full-precision coordinates
         allPOIs.push({
-          id: props.id,
+          id: String(props.id), // Convert to string for consistency with get_poi_details
           name: props.name || 'Unknown',
           category: search.category,
           genre: props.sgenreName || null,
@@ -1543,7 +1543,11 @@ class JapanDayTripApp {
    * @returns {Object} Full POI details
    */
   getPOIDetails(ids = []) {
+    console.log('[DEBUG getPOIDetails] Called with IDs:', ids);
+    console.log('[DEBUG getPOIDetails] IDs length:', ids.length);
+
     if (!Array.isArray(ids) || ids.length === 0) {
+      console.log('[DEBUG getPOIDetails] No IDs provided, returning error');
       return {
         pois: [],
         count: 0,
@@ -1553,22 +1557,37 @@ class JapanDayTripApp {
 
     const detailedPOIs = [];
     const idsSet = new Set(ids);
+    console.log('[DEBUG getPOIDetails] IDs set:', Array.from(idsSet));
+    console.log('[DEBUG getPOIDetails] Visible search IDs:', Array.from(this.visibleSearchIds));
 
     // Search through all visible search layers
     this.visibleSearchIds.forEach(searchId => {
       const search = this.searchHistory.get(searchId);
-      if (!search || !search.geojson) return;
+      if (!search || !search.geojson) {
+        console.log(`[DEBUG getPOIDetails] Search ${searchId} not found or no geojson`);
+        return;
+      }
 
-      search.geojson.features.forEach(feature => {
+      console.log(`[DEBUG getPOIDetails] Checking search ${searchId}, category: ${search.category}, features: ${search.geojson.features.length}`);
+
+      search.geojson.features.forEach((feature, idx) => {
         const props = feature.properties;
 
+        // Log first 3 feature IDs for debugging
+        if (idx < 3) {
+          console.log(`[DEBUG getPOIDetails] Feature ${idx} ID: "${props.id}" (type: ${typeof props.id}), name: ${props.name}`);
+        }
+
         // Check if this POI is in the requested IDs
-        if (idsSet.has(props.id)) {
+        // Convert to string for comparison (IDs come as strings from Claude, stored as numbers)
+        const idStr = String(props.id);
+        if (idsSet.has(idStr)) {
+          console.log(`[DEBUG getPOIDetails] MATCH FOUND! ID: ${props.id}`);
           const [lng, lat] = feature.geometry.coordinates;
 
           // Return FULL details
           detailedPOIs.push({
-            id: props.id,
+            id: idStr, // Use string version for consistency
             name: props.name || 'Unknown',
             kana: props.kana || null,
             address: props.address || null,
@@ -1587,11 +1606,15 @@ class JapanDayTripApp {
             sgenre: props.sgenre || null
           });
 
-          // Remove from set once found
-          idsSet.delete(props.id);
+          // Remove from set once found (use string version)
+          idsSet.delete(idStr);
         }
       });
     });
+
+    console.log('[DEBUG getPOIDetails] Found POIs:', detailedPOIs.length);
+    console.log('[DEBUG getPOIDetails] Not found IDs:', Array.from(idsSet));
+    console.log('[DEBUG getPOIDetails] Returning POIs:', detailedPOIs.map(p => ({ id: p.id, name: p.name })));
 
     return {
       pois: detailedPOIs,
@@ -1658,7 +1681,9 @@ class JapanDayTripApp {
         }
 
         case 'get_poi_details': {
+          console.log('[DEBUG TOOL] get_poi_details called with args:', args);
           const details = this.getPOIDetails(args.ids);
+          console.log('[DEBUG TOOL] get_poi_details returning:', details);
           return {
             content: [{
               type: 'text',

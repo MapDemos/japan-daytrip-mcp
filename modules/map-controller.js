@@ -257,7 +257,7 @@ export class MapController {
         },
         {
           name: 'search_location',
-          description: 'Search for locations using Mapbox SearchBox API. USE THIS TOOL when: (1) search_rurubu_pois returns 0 results, OR (2) user asks for non-tourism POIs like hospitals, stations, hotels, convenience stores, banks, etc. Results are AUTOMATICALLY displayed on map with icons. Can find any type of location: hospitals (病院), stations (駅), hotels (ホテル), convenience stores (コンビニ), restaurants, landmarks, addresses, etc. IMPORTANT: Always translate English location names to Japanese before searching (e.g., "Tokyo Tower" → "東京タワー", "Shibuya Station" → "渋谷駅", "hospitals" → "病院").',
+          description: 'Search for INFRASTRUCTURE locations using Mapbox SearchBox API (NOT for tourism POIs). USE THIS TOOL ONLY when: (1) search_rurubu_pois returns 0 results, OR (2) user asks for non-tourism infrastructure like hospitals, stations, hotels, convenience stores, banks, parking. ⚠️ NEVER use for restaurants/cafes/temples - use search_rurubu_pois instead. Results are AUTOMATICALLY displayed on map with icons. Returns BASIC data only (name, coordinates, category - NO prices, NO hours, NO ratings). Can find: hospitals (病院), stations (駅), hotels (ホテル), convenience stores (コンビニ), banks (銀行), parking (駐車場). IMPORTANT: Always translate to Japanese (e.g., "Shibuya Station" → "渋谷駅", "hospitals" → "病院").',
           input_schema: {
             type: 'object',
             properties: {
