@@ -25,8 +25,6 @@ export async function geocodeLocation(location, accessToken, options = {}) {
 
     const url = `https://api.mapbox.com/search/geocode/v6/forward?${params}`;
 
-    console.log(`[Mapbox Geocoding v6] Request: "${location}"`);
-
     const response = await fetch(url);
     if (!response.ok) {
       console.warn(`[Mapbox Geocoding v6] Failed: ${response.status}`);
@@ -37,15 +35,6 @@ export async function geocodeLocation(location, accessToken, options = {}) {
 
     if (data.features && data.features.length > 0) {
       const feature = data.features[0];
-
-      console.log(`[Mapbox Geocoding v6] Success:`, {
-        input: location,
-        name: feature.properties?.name,
-        full_address: feature.properties?.full_address,
-        place_formatted: feature.properties?.place_formatted,
-        coordinates: feature.geometry?.coordinates,
-        match_code: feature.properties?.match_code
-      });
 
       return feature;
     }
@@ -72,7 +61,6 @@ export function extractJapaneseNames(feature) {
   // Priority 1: Main feature name
   if (props.name) {
     names.add(props.name);
-    console.log(`[Mapbox Geocoding v6] Extracted name: ${props.name}`);
   }
 
   // Priority 2: Context hierarchy (parent locations)
@@ -81,7 +69,6 @@ export function extractJapaneseNames(feature) {
     for (const [type, contextInfo] of Object.entries(props.context)) {
       if (contextInfo?.name) {
         names.add(contextInfo.name);
-        console.log(`[Mapbox Geocoding v6] Extracted context ${type}: ${contextInfo.name}`);
       }
     }
   }
@@ -100,7 +87,6 @@ export function extractJapaneseNames(feature) {
   }
 
   const result = Array.from(names).filter(n => n.length > 0);
-  console.log(`[Mapbox Geocoding v6] Extracted Japanese names:`, result);
   return result;
 }
 
@@ -125,8 +111,6 @@ export async function reverseGeocode(longitude, latitude, accessToken, options =
 
     const url = `https://api.mapbox.com/search/geocode/v6/reverse?${params}`;
 
-    console.log(`[Mapbox Reverse Geocoding v6] Request: [${longitude}, ${latitude}]`);
-
     const response = await fetch(url);
     if (!response.ok) {
       console.warn(`[Mapbox Reverse Geocoding v6] Failed: ${response.status}`);
@@ -137,13 +121,6 @@ export async function reverseGeocode(longitude, latitude, accessToken, options =
 
     if (data.features && data.features.length > 0) {
       const feature = data.features[0];
-
-      console.log(`[Mapbox Reverse Geocoding v6] Success:`, {
-        coordinates: [longitude, latitude],
-        name: feature.properties?.name,
-        full_address: feature.properties?.full_address,
-        place_formatted: feature.properties?.place_formatted
-      });
 
       return feature;
     }
@@ -206,10 +183,6 @@ export async function searchLocation(query, accessToken, options = {}) {
 
     const data = await response.json();
 
-    console.log(`[Mapbox SearchBox] ===== RESPONSE =====`);
-    console.log(`[Mapbox SearchBox] Full response:`, JSON.stringify(data, null, 2));
-    console.log(`[Mapbox SearchBox] Number of features:`, data.features?.length || 0);
-
     if (!data.features || data.features.length === 0) {
       console.warn(`[Mapbox SearchBox] No results for: "${query}"`);
       return {
@@ -221,14 +194,26 @@ export async function searchLocation(query, accessToken, options = {}) {
 
     // Format results
     const results = data.features.map((feature, index) => {
+      const props = feature.properties;
 
       return {
-        name: feature.properties.name || feature.properties.full_address,
-        full_address: feature.properties.full_address || feature.properties.place_formatted,
+        name: props.name || props.full_address,
+        full_address: props.full_address || props.place_formatted,
+        place_formatted: props.place_formatted,     // Just the address without name
         coordinates: feature.geometry.coordinates,
-        mapbox_id: feature.properties.mapbox_id,
-        feature_type: feature.properties.feature_type,
-        context: feature.properties.context
+        mapbox_id: props.mapbox_id,
+        feature_type: props.feature_type,
+        context: props.context,
+
+        // POI category information for icon display
+        poi_category: props.poi_category,           // Array like ["restaurant", "sushi restaurant"]
+        poi_category_ids: props.poi_category_ids,   // Canonical IDs
+        maki: props.maki,                           // Mapbox icon identifier (e.g., "restaurant-15")
+
+        // Additional useful metadata
+        metadata: props.metadata,                   // Contains Japanese readings for Japan POIs
+        brand: props.brand,                         // Brand name if chain
+        external_ids: props.external_ids            // Links to Foursquare, SafeGraph, etc.
       };
     });
 
@@ -262,7 +247,7 @@ export async function getDirections(waypoints, accessToken, options = {}) {
     }
 
     // Default options
-    const profile = options.profile || 'driving'; // driving, walking, cycling, driving-traffic
+    const profile = options.profile || 'driving'; // Note: For Directions API, profile is just the suffix (not "mapbox/profile")
     const steps = options.steps !== undefined ? options.steps : true;
     const geometries = options.geometries || 'geojson';
     const language = options.language || 'en';
@@ -299,8 +284,6 @@ export async function getDirections(waypoints, accessToken, options = {}) {
 
     const url = `https://api.mapbox.com/directions/v5/mapbox.tmp.valhalla-zenrin/${profile}/${coordinates}?${params.toString()}`;
 
-    console.log(`[Mapbox Directions] Fetching route with ${waypoints.length} waypoints (${profile})`);
-
     const response = await fetch(url);
 
     if (!response.ok) {
@@ -313,8 +296,6 @@ export async function getDirections(waypoints, accessToken, options = {}) {
     if (!data.routes || data.routes.length === 0) {
       throw new Error('No route found between the waypoints');
     }
-
-    console.log(`[Mapbox Directions] Route found: ${(data.routes[0].distance / 1000).toFixed(2)}km, ${Math.round(data.routes[0].duration / 60)}min`);
 
     return data;
 
@@ -340,16 +321,139 @@ export async function matchToRoads(coordinates, accessToken, options = {}) {
 
 /**
  * Get travel time matrix between multiple points using Mapbox Matrix API
- * TODO: Implement when needed
- * @param {array} coordinates - Array of [lng, lat] coordinates
+ * @param {array} coordinates - Array of [lng, lat] coordinates (max 25 for standard, 10 for traffic)
  * @param {string} accessToken - Mapbox access token
- * @param {object} options - Additional options (profile, sources, destinations, etc.)
- * @returns {object|null} - Matrix response or null if failed
+ * @param {object} options - Additional options (profile, sources, destinations, annotations, etc.)
+ * @returns {object} - Matrix response with durations and distances
  */
 export async function getTravelTimeMatrix(coordinates, accessToken, options = {}) {
-  // TODO: Implement Mapbox Matrix API
-  console.warn('[Mapbox Matrix API] Not yet implemented');
-  return null;
+  try {
+    if (!coordinates || coordinates.length < 2) {
+      throw new Error('At least 2 coordinates are required');
+    }
+
+    // Default profile - MUST include "mapbox/" prefix
+    const profile = options.profile || 'mapbox/driving';
+
+    // Valid profiles: mapbox/driving, mapbox/walking, mapbox/cycling, mapbox/driving-traffic
+    const validProfiles = ['mapbox/driving', 'mapbox/walking', 'mapbox/cycling', 'mapbox/driving-traffic'];
+    if (!validProfiles.includes(profile)) {
+      throw new Error(`Invalid profile: ${profile}. Must be one of: ${validProfiles.join(', ')}`);
+    }
+
+    // Validate coordinate limits based on profile
+    const maxCoords = profile === 'mapbox/driving-traffic' ? 10 : 25;
+    if (coordinates.length > maxCoords) {
+      throw new Error(`Maximum ${maxCoords} coordinates allowed for profile: ${profile}`);
+    }
+
+    // Validate coordinates format
+    for (const coord of coordinates) {
+      if (!Array.isArray(coord) || coord.length !== 2) {
+        throw new Error('Each coordinate must be an array of [longitude, latitude]');
+      }
+      if (typeof coord[0] !== 'number' || typeof coord[1] !== 'number') {
+        throw new Error('Coordinates must be numbers');
+      }
+      // Validate coordinate ranges
+      if (coord[0] < -180 || coord[0] > 180) {
+        throw new Error(`Invalid longitude: ${coord[0]} (must be between -180 and 180)`);
+      }
+      if (coord[1] < -90 || coord[1] > 90) {
+        throw new Error(`Invalid latitude: ${coord[1]} (must be between -90 and 90)`);
+      }
+    }
+
+    // Default annotations
+    const annotations = options.annotations || ['duration', 'distance'];
+    const fallback_speed = options.fallback_speed; // Optional fallback speed in km/h
+
+    // Build coordinates string (lng,lat;lng,lat;...)
+    const coordinatesString = coordinates
+      .map(coord => `${coord[0]},${coord[1]}`)
+      .join(';');
+
+    // Build API URL
+    const params = new URLSearchParams({
+      access_token: accessToken,
+      annotations: annotations.join(',')
+    });
+
+    // Add optional parameters
+    if (options.sources !== undefined) {
+      // Indices of coordinates to use as sources (semicolon-separated, e.g., "0;1;2" or "all")
+      const sources = options.sources === 'all' ? 'all' :
+                      Array.isArray(options.sources) ? options.sources.join(';') :
+                      options.sources.toString();
+
+      // Validate source indices if not "all"
+      if (sources !== 'all') {
+        const sourceIndices = sources.split(';').map(Number);
+        for (const idx of sourceIndices) {
+          if (idx < 0 || idx >= coordinates.length) {
+            throw new Error(`Invalid source index: ${idx} (must be between 0 and ${coordinates.length - 1})`);
+          }
+        }
+      }
+      params.append('sources', sources);
+    }
+
+    if (options.destinations !== undefined) {
+      // Indices of coordinates to use as destinations (semicolon-separated, e.g., "0;1;2" or "all")
+      const destinations = options.destinations === 'all' ? 'all' :
+                           Array.isArray(options.destinations) ? options.destinations.join(';') :
+                           options.destinations.toString();
+
+      // Validate destination indices if not "all"
+      if (destinations !== 'all') {
+        const destIndices = destinations.split(';').map(Number);
+        for (const idx of destIndices) {
+          if (idx < 0 || idx >= coordinates.length) {
+            throw new Error(`Invalid destination index: ${idx} (must be between 0 and ${coordinates.length - 1})`);
+          }
+        }
+      }
+      params.append('destinations', destinations);
+    }
+
+    if (fallback_speed !== undefined) {
+      params.append('fallback_speed', fallback_speed.toString());
+    }
+
+    // Correct URL format - profile already contains "mapbox/" prefix
+    const url = `https://api.mapbox.com/directions-matrix/v1/${profile}/${coordinatesString}?${params.toString()}`;
+
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      let errorMessage = `Matrix API error (${response.status}): ${response.statusText}`;
+      try {
+        const error = await response.json();
+        errorMessage = `Matrix API error: ${error.message || error.code || response.statusText}`;
+      } catch (e) {
+        // If error response is not JSON, use status text
+      }
+      throw new Error(errorMessage);
+    }
+
+    const data = await response.json();
+
+    // Check for successful response
+    if (data.code && data.code !== 'Ok') {
+      throw new Error(`Matrix API returned error code: ${data.code}${data.message ? ' - ' + data.message : ''}`);
+    }
+
+    // Validate that we have either durations or distances
+    if (!data.durations && !data.distances) {
+      throw new Error('No matrix data returned - response missing durations and distances arrays');
+    }
+
+    return data;
+
+  } catch (error) {
+    console.error('[Mapbox Matrix API] Error:', error);
+    throw error;
+  }
 }
 
 /**
@@ -366,7 +470,7 @@ export async function getIsochrone(coordinates, accessToken, options = {}) {
     }
 
     // Default options
-    const profile = options.profile || 'driving'; // driving, walking, cycling, driving-traffic
+    const profile = options.profile || 'driving'; // Note: For Isochrone API, profile is just the suffix (not "mapbox/profile")
     const contours_minutes = options.contours_minutes || [10, 20, 30]; // Up to 4 values
     const polygons = options.polygons !== undefined ? options.polygons : true;
     const denoise = options.denoise !== undefined ? options.denoise : 1.0;
@@ -394,8 +498,6 @@ export async function getIsochrone(coordinates, accessToken, options = {}) {
 
     const url = `https://api.mapbox.com/isochrone/v1/mapbox/${profile}/${coordsString}?${params.toString()}`;
 
-    console.log(`[Mapbox Isochrone] Fetching ${contours_minutes.length} contours (${profile})`);
-
     const response = await fetch(url);
 
     if (!response.ok) {
@@ -408,8 +510,6 @@ export async function getIsochrone(coordinates, accessToken, options = {}) {
     if (!data.features || data.features.length === 0) {
       throw new Error('No isochrone data returned');
     }
-
-    console.log(`[Mapbox Isochrone] Success: ${data.features.length} contours`);
 
     return data;
 

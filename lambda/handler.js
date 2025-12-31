@@ -21,11 +21,8 @@ export const handler = async (event) => {
                        process.env.DEFAULT_AI_PROVIDER ||
                        'claude';
 
-    console.log(`[Lambda] Routing to ${aiProvider} API`);
-
     // Check if streaming is requested
     if (requestBody.stream === true) {
-      console.log('[Lambda] Streaming mode enabled');
       return await handleStreamingRequest(aiProvider, requestBody);
     }
 

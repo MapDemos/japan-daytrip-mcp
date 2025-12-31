@@ -65,7 +65,6 @@ export class ErrorLogger {
    * @param {Object} additionalData - Extra context data
    */
   info(context, message, additionalData = {}) {
-    console.log(`[INFO] ${context}:`, message, additionalData);
   }
 
   /**
@@ -99,7 +98,6 @@ export class ErrorLogger {
   clear() {
     this.errors = [];
     this.errorCounts.clear();
-    console.log('[ErrorLogger] Error history cleared');
   }
 
   /**

@@ -89,8 +89,6 @@ IMPORTANT GUIDELINES:
       ];
 
       if (this.config.DEBUG) {
-        console.log('[Gemini] Available tools:', tools.map(t => t.name));
-        console.log('[Gemini] Conversation length:', this.conversationHistory.length);
       }
 
       if (onProgress) {
@@ -115,7 +113,6 @@ IMPORTANT GUIDELINES:
         }
       };
 
-      console.log('[Gemini] Calling API directly (testing CORS)...');
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
@@ -130,7 +127,6 @@ IMPORTANT GUIDELINES:
       }
 
       const result = await response.json();
-      console.log('[Gemini] Response received:', result);
 
       // Process response and handle tool calls
       return await this.processGeminiResponse(result, onProgress);
@@ -177,8 +173,6 @@ IMPORTANT GUIDELINES:
 
     // If there are function calls, execute them
     if (functionCalls.length > 0) {
-      console.log('[Gemini] Executing', functionCalls.length, 'function calls');
-
       const functionResponses = [];
 
       for (const functionCall of functionCalls) {
@@ -276,13 +270,10 @@ IMPORTANT GUIDELINES:
    * Execute a tool from any of the three MCP sources
    */
   async executeTool(toolName, args) {
-    console.log(`[Gemini] Executing tool: ${toolName}`, args);
-
     try {
       // Check Rurubu MCP tools
       const rurubuTool = this.rurubuMCP.getToolDefinition(toolName);
       if (rurubuTool) {
-        console.log('[Gemini] → Rurubu MCP');
         return await this.rurubuMCP.executeTool(toolName, args);
       }
 
@@ -290,7 +281,6 @@ IMPORTANT GUIDELINES:
       const mapTools = this.mapController.getToolsForClaude();
       const mapTool = mapTools.find(t => t.name === toolName);
       if (mapTool) {
-        console.log('[Gemini] → Map Tools');
         return await this.mapController.executeTool(toolName, args);
       }
 
@@ -313,7 +303,6 @@ IMPORTANT GUIDELINES:
    */
   clearHistory() {
     this.conversationHistory = [];
-    console.log('[Gemini] Conversation history cleared');
   }
 
   /**

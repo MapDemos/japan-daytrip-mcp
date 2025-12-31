@@ -96,6 +96,7 @@ body {
   display: flex;
   align-items: center;
   gap: var(--spacing-md);
+  margin-left: auto;
 }
 
 .token-counter {
@@ -778,4 +779,100 @@ body {
   50% {
     transform: scale(1.25);
   }
+}
+
+/* ========================================
+   POI Pill Markers (Google Maps Style)
+   ======================================== */
+.poi-pill-marker {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 3px 8px 3px 3px;
+  background: white !important;
+  border-radius: 18px !important;
+  border: 2px solid rgba(0, 0, 0, 0.1) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3) !important;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+  pointer-events: auto !important;
+  min-width: 60px;
+}
+
+.poi-pill-marker:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4) !important;
+  border-color: #4285F4 !important;
+  z-index: 1000 !important;
+}
+
+.poi-pill-icon {
+  font-size: 20px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.poi-pill-ranking {
+  font-size: 14px;
+  font-weight: 700;
+  color: #333;
+  font-family: var(--font-family-mono);
+  letter-spacing: 0.5px;
+  min-width: 18px;
+  text-align: center;
+}
+
+/* Star Pill Marker Variations */
+.star-pill-marker {
+  background: linear-gradient(135deg, #FFE082 0%, #FFD54F 100%) !important;
+  border: 3px solid #FFD700 !important;
+  box-shadow: 0 2px 12px rgba(255, 215, 0, 0.4) !important;
+}
+
+.star-pill-marker:hover {
+  box-shadow: 0 4px 16px rgba(255, 215, 0, 0.6) !important;
+  border-color: #FFC700 !important;
+}
+
+/* Waypoint Numbers Integrated into POI Pills */
+.poi-waypoint-number {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #1a1a1a;
+  color: white;
+  font-size: 14px;
+  font-weight: 700;
+  font-family: var(--font-family-mono);
+  margin-right: 6px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+  flex-shrink: 0;
+}
+
+/* Ranking color variations */
+.poi-pill-ranking.rank-a {
+  color: #d32f2f; /* Red for A rank */
+}
+
+.poi-pill-ranking.rank-b {
+  color: #ff6f00; /* Orange for B rank */
+}
+
+.poi-pill-ranking.rank-c {
+  color: #1976d2; /* Blue for C rank */
+}
+
+.poi-pill-ranking.rank-d {
+  color: #757575; /* Gray for D rank */
 }

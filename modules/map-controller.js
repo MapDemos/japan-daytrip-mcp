@@ -4,7 +4,7 @@
  */
 
 import mapboxgl from 'mapbox-gl';
-import { geocodeLocation, reverseGeocode, getDirections, searchLocation, getIsochrone } from './mapbox-service-utils.js';
+import { geocodeLocation, reverseGeocode, getDirections, searchLocation, getIsochrone, getTravelTimeMatrix } from './mapbox-service-utils.js';
 
 export class MapController {
   constructor(config, app = null) {
@@ -66,14 +66,6 @@ export class MapController {
         this.map.on('load', resolve);
       });
 
-      // Initialize language control (Mapbox GL Language plugin)
-      if (typeof MapboxLanguage !== 'undefined') {
-        this.languageControl = new MapboxLanguage();
-        this.map.addControl(this.languageControl);
-      } else {
-        console.warn('MapboxLanguage plugin not available');
-      }
-
       // Initialize Map Tools library (loaded from CDN)
       // The MapboxMapTools class should be available globally from the CDN script
       if (typeof MapboxMapTools !== 'undefined') {
@@ -105,8 +97,10 @@ export class MapController {
     try {
       const tools = this.mapTools.getToolsForLLM();
 
-      // Find and replace the add_points_to_map tool definition
-      const modifiedTools = tools.map(tool => {
+      // Filter out deprecated tools and modify others
+      const modifiedTools = tools
+        .filter(tool => tool.name !== 'add_route_to_map') // Remove deprecated tool
+        .map(tool => {
         if (tool.name === 'add_points_to_map') {
           // Return a modified version that accepts GeoJSON
           return {
@@ -263,13 +257,13 @@ export class MapController {
         },
         {
           name: 'search_location',
-          description: 'Search for locations using Mapbox SearchBox API. Returns coordinates and details for POIs. Use this tool to find coordinates for locations before calling get_directions. IMPORTANT: Always translate English location names to Japanese before searching (e.g., "Tokyo Tower" → "東京タワー", "Shibuya Station" → "渋谷駅").',
+          description: 'Search for locations using Mapbox SearchBox API. USE THIS TOOL when: (1) search_rurubu_pois returns 0 results, OR (2) user asks for non-tourism POIs like hospitals, stations, hotels, convenience stores, banks, etc. Results are AUTOMATICALLY displayed on map with icons. Can find any type of location: hospitals (病院), stations (駅), hotels (ホテル), convenience stores (コンビニ), restaurants, landmarks, addresses, etc. IMPORTANT: Always translate English location names to Japanese before searching (e.g., "Tokyo Tower" → "東京タワー", "Shibuya Station" → "渋谷駅", "hospitals" → "病院").',
           input_schema: {
             type: 'object',
             properties: {
               query: {
                 type: 'string',
-                description: 'Search query in JAPANESE (e.g., "東京タワー", "渋谷駅", "京都"). Always translate English names to Japanese before calling this tool.'
+                description: 'Search query in JAPANESE. Examples: "横浜市 病院" (hospitals in Yokohama), "渋谷 コンビニ" (convenience stores in Shibuya), "東京タワー" (Tokyo Tower), "京都駅" (Kyoto Station). Always translate English to Japanese.'
               },
               limit: {
                 type: 'number',
@@ -343,6 +337,57 @@ export class MapController {
           }
         },
         {
+          name: 'get_travel_time_matrix',
+          description: 'Calculate travel times and distances between multiple locations using Mapbox Matrix API. Returns a matrix showing duration (in seconds) and distance (in meters) from each origin to each destination. Perfect for comparing travel times between multiple POIs, finding the closest location, or optimizing multi-stop routes. Use when user asks "how long to get from A to B", "which is closest", or "compare travel times between these places".',
+          input_schema: {
+            type: 'object',
+            properties: {
+              coordinates: {
+                type: 'array',
+                description: 'Array of location coordinates in [longitude, latitude] format. Minimum 2 locations, maximum 25. By default, calculates travel time from each location to all other locations.',
+                items: {
+                  type: 'array',
+                  items: { type: 'number' },
+                  minItems: 2,
+                  maxItems: 2
+                },
+                minItems: 2,
+                maxItems: 25
+              },
+              profile: {
+                type: 'string',
+                description: 'Routing profile: "driving" (default), "walking", "cycling", or "driving-traffic"',
+                enum: ['driving', 'walking', 'cycling', 'driving-traffic'],
+                default: 'driving'
+              },
+              sources: {
+                description: 'Optional: Indices of coordinates to use as sources (origins). Can be array of numbers [0,1,2] or "all". If omitted, all coordinates are used as sources.',
+                oneOf: [
+                  { type: 'string', enum: ['all'] },
+                  { type: 'array', items: { type: 'number' } }
+                ]
+              },
+              destinations: {
+                description: 'Optional: Indices of coordinates to use as destinations. Can be array of numbers [0,1,2] or "all". If omitted, all coordinates are used as destinations.',
+                oneOf: [
+                  { type: 'string', enum: ['all'] },
+                  { type: 'array', items: { type: 'number' } }
+                ]
+              },
+              annotations: {
+                type: 'array',
+                description: 'Data to include in response: "duration" (seconds), "distance" (meters). Default: both',
+                items: {
+                  type: 'string',
+                  enum: ['duration', 'distance']
+                },
+                default: ['duration', 'distance']
+              }
+            },
+            required: ['coordinates']
+          }
+        },
+        {
           name: 'hide_all_isochrones',
           description: 'Hide all isochrones from the map. Use when user asks to hide isochrones or clear the map of isochrone polygons.',
           input_schema: {
@@ -389,16 +434,20 @@ export class MapController {
         },
         {
           name: 'highlight_recommended_pois',
-          description: 'Add star markers to highlight recommended POIs on the map. Use this after making specific recommendations. Provide POI names AND coordinates to ensure correct placement.',
+          description: 'Add star markers to highlight recommended POIs on the map. ALWAYS call this BEFORE writing your response. POIs are auto-numbered (1,2,3...) in order provided. CRITICAL: Use exact data from get_poi_summary - include "id" field (mandatory for Rurubu POIs, ensures 99% match rate), exact "name" (no translation/shortening), and full-precision "coordinates". ID matching has 99% success rate vs 50% for name-only matching.',
           input_schema: {
             type: 'object',
             properties: {
               pois: {
                 type: 'array',
-                description: 'Array of POI objects with name and coordinates',
+                description: 'Array of POI objects with optional id, name, and coordinates',
                 items: {
                   type: 'object',
                   properties: {
+                    id: {
+                      type: 'string',
+                      description: 'POI ID (preferred for accurate matching, especially for Rurubu POIs)'
+                    },
                     name: {
                       type: 'string',
                       description: 'POI name'
@@ -445,8 +494,8 @@ export class MapController {
               },
               color: {
                 type: 'string',
-                description: 'Route color in hex format (default: "#1976d2" blue)',
-                default: '#1976d2'
+                description: 'Route color in hex format (default: "#9C27B0" purple)',
+                default: '#9C27B0'
               }
             },
             required: ['waypoints']
@@ -527,6 +576,10 @@ export class MapController {
 
       if (toolName === 'get_isochrone') {
         return await this.executeGetIsochrone(args);
+      }
+
+      if (toolName === 'get_travel_time_matrix') {
+        return await this.executeGetTravelTimeMatrix(args);
       }
 
       if (toolName === 'hide_all_routes') {
@@ -850,7 +903,211 @@ export class MapController {
 
 
   /**
+   * Get emoji icon for POI category
+   * @param {string} category - POI category (see, play, eat, cafe, nightlife, buy, onsen, other)
+   * @returns {string} Emoji icon
+   */
+  getPOICategoryIcon(category) {
+    const iconMap = {
+      see: '👁️',        // Sightseeing / Tourism
+      play: '🎮',       // Entertainment / Activities
+      eat: '🍽️',       // Restaurants / Dining
+      cafe: '☕',       // Cafes / Tea houses
+      nightlife: '🍺',  // Bars / Nightlife
+      buy: '🛍️',       // Shopping
+      onsen: '♨️',      // Hot springs
+      other: '📍'       // Miscellaneous
+    };
+
+    return iconMap[category] || iconMap.other;
+  }
+
+  /**
+   * Official Mapbox icon identifier to emoji mapping
+   * Based on Mapbox Category API: https://api.mapbox.com/search/v1/list/category
+   * @private
+   */
+  MAPBOX_ICON_TO_EMOJI = {
+    // Food & Drink
+    'restaurant': { emoji: '🍽️', color: '#FF5722' },
+    'restaurant-noodle': { emoji: '🍜', color: '#FF5722' },
+    'restaurant-pizza': { emoji: '🍕', color: '#FF5722' },
+    'restaurant-seafood': { emoji: '🐟', color: '#FF5722' },
+    'restaurant-sushi': { emoji: '🍣', color: '#FF5722' },
+    'cafe': { emoji: '☕', color: '#795548' },
+    'bar': { emoji: '🍺', color: '#9C27B0' },
+    'fast-food': { emoji: '🍔', color: '#FF9800' },
+    'bakery': { emoji: '🥐', color: '#F4B400' },
+    'confectionery': { emoji: '🍰', color: '#E91E63' },
+    'ice-cream': { emoji: '🍦', color: '#E91E63' },
+
+    // Tourism & Attractions
+    'attraction': { emoji: '🗼', color: '#E91E63' },
+    'museum': { emoji: '🏛️', color: '#9C27B0' },
+    'art-gallery': { emoji: '🎨', color: '#673AB7' },
+    'castle': { emoji: '🏯', color: '#9C27B0' },
+    'religious-shinto': { emoji: '⛩️', color: '#9C27B0' },
+    'religious-buddhist': { emoji: '🛕', color: '#9C27B0' },
+    'religious-christian': { emoji: '⛪', color: '#9C27B0' },
+    'religious-muslim': { emoji: '🕌', color: '#9C27B0' },
+
+    // Entertainment
+    'amusement-park': { emoji: '🎢', color: '#FF9800' },
+    'park': { emoji: '🌳', color: '#4CAF50' },
+    'garden': { emoji: '🏞️', color: '#4CAF50' },
+    'zoo': { emoji: '🦁', color: '#4CAF50' },
+    'aquarium': { emoji: '🐠', color: '#2196F3' },
+    'theatre': { emoji: '🎭', color: '#9C27B0' },
+    'cinema': { emoji: '🎬', color: '#9C27B0' },
+    'nightclub': { emoji: '💃', color: '#E91E63' },
+    'karaoke': { emoji: '🎤', color: '#FF9800' },
+    'casino': { emoji: '🎰', color: '#FFC107' },
+
+    // Shopping
+    'shop': { emoji: '🛍️', color: '#2196F3' },
+    'grocery': { emoji: '🛒', color: '#4CAF50' },
+    'convenience': { emoji: '🏪', color: '#2196F3' },
+    'clothing-store': { emoji: '👔', color: '#E91E63' },
+    'shoe': { emoji: '👟', color: '#E91E63' },
+    'furniture': { emoji: '🛋️', color: '#795548' },
+    'florist': { emoji: '💐', color: '#E91E63' },
+    'hardware': { emoji: '🔧', color: '#607D8B' },
+    'mobile-phone': { emoji: '📱', color: '#2196F3' },
+    'watch': { emoji: '⌚', color: '#795548' },
+    'alcohol-shop': { emoji: '🍷', color: '#9C27B0' },
+    'beer': { emoji: '🍺', color: '#9C27B0' },
+
+    // Accommodation
+    'lodging': { emoji: '🏨', color: '#4CAF50' },
+    'campsite': { emoji: '⛺', color: '#4CAF50' },
+
+    // Transportation
+    'rail': { emoji: '🚃', color: '#2196F3' },
+    'rail-metro': { emoji: '🚇', color: '#2196F3' },
+    'bus': { emoji: '🚌', color: '#2196F3' },
+    'airport': { emoji: '✈️', color: '#2196F3' },
+    'parking': { emoji: '🅿️', color: '#607D8B' },
+    'taxi': { emoji: '🚕', color: '#FFC107' },
+    'ferry': { emoji: '⛴️', color: '#2196F3' },
+    'fuel': { emoji: '⛽', color: '#607D8B' },
+    'car-rental': { emoji: '🚗', color: '#4CAF50' },
+    'charging-station': { emoji: '🔌', color: '#4CAF50' },
+
+    // Healthcare
+    'hospital': { emoji: '🏥', color: '#F44336' },
+    'hospital-JP': { emoji: '🏥', color: '#F44336' },
+    'doctor': { emoji: '⚕️', color: '#F44336' },
+    'dentist': { emoji: '🦷', color: '#F44336' },
+    'pharmacy': { emoji: '💊', color: '#F44336' },
+    'optician': { emoji: '👓', color: '#F44336' },
+
+    // Services
+    'bank': { emoji: '🏦', color: '#607D8B' },
+    'post': { emoji: '📮', color: '#FF5722' },
+    'police': { emoji: '👮', color: '#2196F3' },
+    'fire-station': { emoji: '🚒', color: '#F44336' },
+    'library': { emoji: '📚', color: '#795548' },
+    'school': { emoji: '🏫', color: '#2196F3' },
+    'college-JP': { emoji: '🎓', color: '#2196F3' },
+    'town-hall': { emoji: '🏛️', color: '#607D8B' },
+    'embassy': { emoji: '🏛️', color: '#607D8B' },
+    'laundry': { emoji: '🧺', color: '#2196F3' },
+
+    // Sports
+    'stadium': { emoji: '🏟️', color: '#4CAF50' },
+    'fitness-centre': { emoji: '💪', color: '#FF9800' },
+    'swimming': { emoji: '🏊', color: '#2196F3' },
+    'baseball': { emoji: '⚾', color: '#4CAF50' },
+    'basketball': { emoji: '🏀', color: '#FF9800' },
+    'soccer': { emoji: '⚽', color: '#4CAF50' },
+    'tennis': { emoji: '🎾', color: '#4CAF50' },
+    'golf': { emoji: '⛳', color: '#4CAF50' },
+    'skiing': { emoji: '⛷️', color: '#2196F3' },
+    'bowling-alley': { emoji: '🎳', color: '#9C27B0' },
+    'horse-riding': { emoji: '🐴', color: '#795548' },
+    'racetrack-horse': { emoji: '🏇', color: '#795548' },
+
+    // Nature & Outdoors
+    'hot-spring': { emoji: '♨️', color: '#FF5722' },
+    'harbor': { emoji: '⚓', color: '#2196F3' },
+    'water': { emoji: '💧', color: '#2196F3' },
+    'cemetery': { emoji: '⚰️', color: '#607D8B' },
+
+    // Commercial
+    'commercial': { emoji: '🏢', color: '#607D8B' },
+    'building-alt1': { emoji: '🏢', color: '#607D8B' },
+    'warehouse': { emoji: '🏭', color: '#607D8B' },
+    'home': { emoji: '🏠', color: '#4CAF50' },
+
+    // Miscellaneous
+    'suitcase': { emoji: '🧳', color: '#9C27B0' },
+    'information': { emoji: 'ℹ️', color: '#2196F3' },
+    'bicycle': { emoji: '🚴', color: '#4CAF50' },
+    'bicycle-share': { emoji: '🚲', color: '#4CAF50' },
+    'gaming': { emoji: '🎮', color: '#9C27B0' },
+    'music': { emoji: '🎵', color: '#9C27B0' },
+    'recycling': { emoji: '♻️', color: '#4CAF50' },
+    'slaughterhouse': { emoji: '🏭', color: '#607D8B' },
+    'highway-rest-area': { emoji: '🚻', color: '#607D8B' },
+    'hairdresser': { emoji: '💇', color: '#E91E63' }
+  };
+
+  /**
+   * Get emoji icon for Mapbox SearchBox POI
+   * Priority: maki field > poi_category > default
+   * @param {string} maki - Mapbox maki icon identifier (e.g., "restaurant-15")
+   * @param {Array|string} poiCategory - POI category or array of categories from SearchBox
+   * @returns {Object} Icon emoji and color
+   */
+  getSearchBoxIcon(maki = null, poiCategory = null) {
+    // Priority 1: Use maki field if available (most reliable - exact Mapbox icon)
+    if (maki && maki !== 'marker') {  // Skip generic "marker" fallback
+      // Extract base icon name from maki (e.g., "restaurant-15" -> "restaurant")
+      const iconName = maki.replace(/-\d+$/, ''); // Remove trailing -NN suffix
+
+      if (this.MAPBOX_ICON_TO_EMOJI[iconName]) {
+        return this.MAPBOX_ICON_TO_EMOJI[iconName];
+      }
+    }
+
+    // Priority 2: Try to match poi_category
+    if (poiCategory) {
+      const categories = Array.isArray(poiCategory) ? poiCategory : [poiCategory];
+      const primaryCategory = categories[0]?.toLowerCase().replace(/\s+/g, '-') || '';
+
+      // Try exact match first
+      if (this.MAPBOX_ICON_TO_EMOJI[primaryCategory]) {
+        return this.MAPBOX_ICON_TO_EMOJI[primaryCategory];
+      }
+
+      // Special handling for healthcare categories
+      if (primaryCategory.includes('hospital') || primaryCategory.includes('medical') ||
+          primaryCategory.includes('health') || primaryCategory.includes('clinic')) {
+        return this.MAPBOX_ICON_TO_EMOJI['hospital'];
+      }
+
+      // Try partial matches (e.g., "sushi restaurant" might contain "restaurant")
+      // Only match if category contains the icon name (not vice versa) to avoid false positives
+      for (const [iconName, iconData] of Object.entries(this.MAPBOX_ICON_TO_EMOJI)) {
+        if (primaryCategory.includes(iconName)) {
+          return iconData;
+        }
+      }
+    }
+
+    // Default fallback
+    return { emoji: '📍', color: '#607D8B' };
+  }
+
+  /**
    * Execute add_points_to_map using DOM markers instead of circles
+   *
+   * REVERT INSTRUCTIONS: To revert to simple default markers:
+   * 1. Replace the marker creation code in the forEach loop with:
+   *    const marker = new mapboxgl.Marker({ color: color || '#FF0000' })
+   *      .setLngLat([longitude, latitude]);
+   * 2. Uncomment the old popup code
+   * 3. Remove the custom wrapper and pill marker element creation
    */
   async executeAddPointsAsMarkers(args) {
     const { points } = args;
@@ -868,28 +1125,76 @@ export class MapController {
     try {
       // Add marker for each point
       points.forEach(point => {
-        const { longitude, latitude, title, description, color } = point;
+        const { longitude, latitude, title, description, category, rank, poi_category, maki } = point;
 
-        // Create popup if there's a title or description
-        let popup = null;
-        if (title || description) {
-          const popupContent = `
-            <div style="padding: 8px;">
-              ${title ? `<div style="font-weight: bold; margin-bottom: 4px;">${title}</div>` : ''}
-              ${description ? `<div style="font-size: 12px; color: #666;">${description}</div>` : ''}
-            </div>
-          `;
-          popup = new mapboxgl.Popup({ offset: 25 }).setHTML(popupContent);
+        // Get emoji icon and color based on category
+        // Priority: SearchBox maki/poi_category > Rurubu category > default
+        let icon, bgColor;
+        if (maki || poi_category) {
+          // Use SearchBox POI data for more specific icons
+          const searchBoxIcon = this.getSearchBoxIcon(maki, poi_category);
+          icon = searchBoxIcon.emoji;
+          bgColor = searchBoxIcon.color;
+        } else if (category) {
+          // Fallback to Rurubu category
+          icon = this.getPOICategoryIcon(category);
+          bgColor = this.getCategoryColor(category);
+        } else {
+          // Default
+          icon = '📍';
+          bgColor = '#607D8B';
         }
 
-        // Create Mapbox GL JS marker with default appearance
-        const marker = new mapboxgl.Marker({ color: color || '#FF0000' })
+        // Format ranking (A-D or empty)
+        const ranking = rank ? rank.toString().toUpperCase() : '';
+        const rankClass = ranking ? `rank-${ranking.toLowerCase()}` : '';
+
+        // Create wrapper for Mapbox positioning (0x0 div)
+        const wrapper = document.createElement('div');
+        wrapper.style.width = '0px';
+        wrapper.style.height = '0px';
+        wrapper.style.position = 'relative';
+
+        // Create pill marker element
+        const markerEl = document.createElement('div');
+        markerEl.className = 'poi-pill-marker';
+
+        // Position to center the pill on the POI location
+        markerEl.style.position = 'absolute';
+        markerEl.style.left = '-35px'; // Adjusted for larger size
+        markerEl.style.top = '-16px';  // Adjusted for larger size
+
+        // Add icon with colored background
+        const iconEl = document.createElement('div');
+        iconEl.className = 'poi-pill-icon';
+        iconEl.style.cssText = `background: ${bgColor} !important;`;
+        iconEl.textContent = icon;
+        markerEl.appendChild(iconEl);
+
+        // Add ranking if available
+        if (ranking) {
+          const rankingEl = document.createElement('div');
+          rankingEl.className = `poi-pill-ranking ${rankClass}`;
+          rankingEl.textContent = ranking;
+          markerEl.appendChild(rankingEl);
+        }
+
+        // Add marker element to wrapper
+        wrapper.appendChild(markerEl);
+
+        // Create Mapbox GL JS marker with custom element (no popup, using modal instead)
+        const marker = new mapboxgl.Marker({
+          element: wrapper,
+          anchor: 'center'
+        })
           .setLngLat([longitude, latitude]);
 
-        // Attach popup if exists
-        if (popup) {
-          marker.setPopup(popup);
-        }
+        // Add click handler to show POI modal
+        markerEl.addEventListener('click', () => {
+          if (this.poiClickCallback) {
+            this.poiClickCallback(point);
+          }
+        });
 
         // Add to map
         marker.addTo(this.map);
@@ -955,10 +1260,102 @@ export class MapController {
       // Clear existing star markers
       this.clearStarMarkers();
 
+      // Track which base markers to hide
+      if (!this.hiddenBaseMarkers) {
+        this.hiddenBaseMarkers = [];
+      }
+
       // Add star marker for each POI
-      pois.forEach(poi => {
-        const { name, coordinates } = poi;
+      pois.forEach((poi, index) => {
+        const { id, name, coordinates } = poi;
         const [lng, lat] = coordinates;
+        const recommendationNumber = index + 1; // 1-based numbering
+
+        // Find and hide the matching base POI marker, transfer waypoint number and props if present
+        let waypointNumber = null;
+        let baseProps = null;
+
+        if (this.layerMarkers) {
+          // Use labeled loops to break out of nested forEach
+          outerLoop: for (const markers of this.layerMarkers.values()) {
+            for (const markerObj of markers) {
+              let isMatch = false;
+
+              // Skip SearchBox POIs - they should not be starred (infrastructure, not recommendations)
+              if (markerObj.props?.source === 'searchbox') {
+                continue;
+              }
+
+              // Priority 1: Match by ID (most reliable for Rurubu POIs)
+              if (id && markerObj.props?.id && String(markerObj.props.id) === String(id)) {
+                isMatch = true;
+              }
+              // Priority 2: Match by exact name (fallback)
+              else if (name && markerObj.name && markerObj.name === name) {
+                isMatch = true;
+              }
+              // Priority 3: Match by coordinates (last resort)
+              else if (coordinates) {
+                const [markerLng, markerLat] = markerObj.coordinates;
+                const distance = Math.sqrt(
+                  Math.pow(markerLng - lng, 2) +
+                  Math.pow(markerLat - lat, 2)
+                );
+                if (distance < 0.0001) {
+                  isMatch = true;
+                }
+              }
+
+              // If this is the matching base marker, hide it
+              if (isMatch) {
+                // Check if this marker has a waypoint number
+                const numberEl = markerObj.markerEl?.querySelector('.poi-waypoint-number');
+                if (numberEl) {
+                  waypointNumber = numberEl.textContent;
+                  // Remove it from the base marker (we'll add it to the star marker)
+                  numberEl.remove();
+                }
+
+                // Store the props data from the base marker
+                baseProps = markerObj.props;
+
+                markerObj.marker.getElement().style.display = 'none';
+                this.hiddenBaseMarkers.push(markerObj);
+
+                break outerLoop; // Stop after first match
+              }
+            }
+          }
+        }
+
+        // Use props from base marker if available, otherwise look up from store
+        const poiData = baseProps || this.app?.poiDataStore?.get(name) || {};
+
+        // Get emoji icon and color based on data source
+        // Priority: SearchBox (maki/poi_category) > Rurubu (sgenre/category) > default
+        let icon, bgColor;
+        if (poiData.maki || poiData.poi_category) {
+          // SearchBox POI - use official Mapbox icons
+          const searchBoxIcon = this.getSearchBoxIcon(poiData.maki, poiData.poi_category);
+          icon = searchBoxIcon.emoji;
+          bgColor = searchBoxIcon.color;
+        } else if (poiData.sgenre) {
+          // Rurubu POI - use sgenre for more specific icon
+          const genreIcon = this.getGenreIcon(poiData.sgenre);
+          icon = genreIcon.emoji;
+          bgColor = genreIcon.color;
+        } else if (poiData.category) {
+          // Rurubu POI - fallback to category
+          icon = this.getPOICategoryIcon(poiData.category);
+          bgColor = this.getCategoryColor(poiData.category);
+        } else {
+          // Default
+          icon = '📍';
+          bgColor = '#FF5722';
+        }
+
+        // Get ranking
+        const ranking = poiData.rank || poiData.Rank || '';
 
         // Create wrapper for Mapbox positioning
         const wrapper = document.createElement('div');
@@ -966,27 +1363,63 @@ export class MapController {
         wrapper.style.height = '0px';
         wrapper.style.position = 'relative';
 
-        // Create star marker element with solid background and pulsing animation
-        const el = document.createElement('div');
-        el.className = 'star-marker';
-        el.innerHTML = '⭐';
-        // Center the star on the wrapper's 0,0 point (POI location)
-        el.style.position = 'absolute';
-        el.style.left = '-18px';  // Half of 36px width
-        el.style.top = '-18px';   // Half of 36px height
+        // Create pill marker element (same style as regular POI markers)
+        const markerEl = document.createElement('div');
+        markerEl.className = 'poi-pill-marker star-pill-marker';
 
-        // Add star to wrapper
-        wrapper.appendChild(el);
+        // Position to center the pill on the POI location
+        markerEl.style.position = 'absolute';
+        // Adjust left position - always has a number now (either waypoint or recommendation)
+        markerEl.style.left = '-55px'; // Wider for number
+        markerEl.style.top = '-16px';
 
-        // Add popup with POI name (no close button, show on hover)
-        const popup = new mapboxgl.Popup({
-          offset: 25,
-          closeButton: false,
-          closeOnClick: false
-        })
-          .setHTML(`<div style="font-weight: bold; color: #ff6b35;">⭐ ${name}</div>`);
+        // Add number: waypoint number takes priority, otherwise use recommendation number
+        const displayNumber = waypointNumber || recommendationNumber.toString();
+        const numberEl = document.createElement('div');
+        numberEl.className = 'poi-waypoint-number';
+        numberEl.textContent = displayNumber;
+        markerEl.appendChild(numberEl);
 
-        // Create and add marker (centered on POI)
+        // Add icon with colored background
+        const iconEl = document.createElement('div');
+        iconEl.className = 'poi-pill-icon';
+        iconEl.style.cssText = `background: ${bgColor} !important;`;
+        iconEl.textContent = icon;
+        markerEl.appendChild(iconEl);
+
+        // Add ranking + star container
+        const rankingContainer = document.createElement('div');
+        rankingContainer.style.display = 'flex';
+        rankingContainer.style.alignItems = 'center';
+        rankingContainer.style.gap = '2px';
+
+        // Add ranking if available
+        if (ranking) {
+          const rankingEl = document.createElement('span');
+          rankingEl.className = 'poi-pill-ranking';
+          rankingEl.textContent = ranking.toString().toUpperCase();
+          rankingContainer.appendChild(rankingEl);
+        }
+
+        // Add star emoji (after ranking)
+        const starEl = document.createElement('span');
+        starEl.textContent = '⭐';
+        starEl.style.fontSize = '12px';
+        rankingContainer.appendChild(starEl);
+
+        markerEl.appendChild(rankingContainer);
+
+        // Add marker element to wrapper
+        wrapper.appendChild(markerEl);
+
+        // Add click handler to show POI modal
+        markerEl.addEventListener('click', () => {
+          if (this.poiClickCallback && poiData) {
+            this.poiClickCallback(poiData);
+          }
+        });
+
+        // Create and add marker
         const marker = new mapboxgl.Marker({
           element: wrapper,
           anchor: 'center'
@@ -994,18 +1427,8 @@ export class MapController {
           .setLngLat([lng, lat])
           .addTo(this.map);
 
-        // Create event handlers
-        const mouseEnterHandler = () => {
-          popup.setLngLat([lng, lat]).addTo(this.map);
-        };
-
-        const mouseLeaveHandler = () => {
-          popup.remove();
-        };
-
-        // Add tracked DOM event listeners
-        this.addDOMListener(el, 'mouseenter', mouseEnterHandler);
-        this.addDOMListener(el, 'mouseleave', mouseLeaveHandler);
+        // Store marker with props for later use (e.g., waypoint numbers)
+        marker._poiData = poiData;
 
         this.starMarkers.push(marker);
       });
@@ -1069,7 +1492,7 @@ export class MapController {
       const colors = {
         driving: '#4264FB',
         'driving-traffic': '#FF6B6B',
-        walking: '#4ECDC4',
+        walking: '#9C27B0',
         cycling: '#95E77D'
       };
       const usedColor = color || colors[profile] || colors.walking;
@@ -1111,7 +1534,7 @@ export class MapController {
    * Execute add_visit_order_markers tool
    */
   async executeAddVisitOrderMarkers(args) {
-    const { locations, color = '#1976d2' } = args;
+    const { locations, color = '#9C27B0' } = args;
 
     if (!locations || !Array.isArray(locations) || locations.length === 0) {
       return {
@@ -1172,6 +1595,14 @@ export class MapController {
   clearStarMarkers() {
     this.starMarkers.forEach(marker => marker.remove());
     this.starMarkers = [];
+
+    // Restore hidden base markers
+    if (this.hiddenBaseMarkers) {
+      this.hiddenBaseMarkers.forEach(markerObj => {
+        markerObj.marker.getElement().style.display = '';
+      });
+      this.hiddenBaseMarkers = [];
+    }
   }
 
   /**
@@ -1348,7 +1779,66 @@ export class MapController {
   }
 
   /**
+   * Execute get_travel_time_matrix tool
+   */
+  async executeGetTravelTimeMatrix(args) {
+    const { coordinates, profile, sources, destinations, annotations } = args;
+
+    // Convert profile to the format required by Matrix API (with "mapbox/" prefix)
+    const profileWithPrefix = profile ? `mapbox/${profile}` : 'mapbox/driving';
+
+    const options = {
+      profile: profileWithPrefix
+    };
+
+    // Add optional parameters if provided
+    if (sources !== undefined) {
+      options.sources = sources;
+    }
+    if (destinations !== undefined) {
+      options.destinations = destinations;
+    }
+    if (annotations !== undefined) {
+      options.annotations = annotations;
+    }
+
+    try {
+      const result = await getTravelTimeMatrix(coordinates, this.config.MAPBOX_ACCESS_TOKEN, options);
+
+      // Format the result to be more readable for Claude
+      const formattedResult = {
+        success: true,
+        profile: profile || 'driving',  // Use the original profile name without prefix
+        coordinates: coordinates,
+        durations: result.durations,  // 2D array: durations[source][destination] in seconds
+        distances: result.distances,  // 2D array: distances[source][destination] in meters
+        sources: result.sources || coordinates.map((coord, i) => ({ location: coord, location_index: i })),
+        destinations: result.destinations || coordinates.map((coord, i) => ({ location: coord, location_index: i })),
+        message: `Travel time matrix calculated for ${coordinates.length} locations using ${profile || 'driving'} profile. Matrix shows travel times (seconds) and distances (meters) between all origin-destination pairs.`
+      };
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify(formattedResult, null, 2)
+        }]
+      };
+    } catch (error) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            message: `Failed to calculate travel time matrix: ${error.message}`
+          }, null, 2)
+        }]
+      };
+    }
+  }
+
+  /**
    * Execute search_location tool - Search for locations using SearchBox API
+   * Automatically displays results on the map (like Rurubu POIs)
    */
   async executeSearchLocation(args) {
     const { query, limit } = args;
@@ -1362,7 +1852,7 @@ export class MapController {
     const options = {
       limit: validLimit,
       language: 'ja',  // Always use Japanese for better results in Japan
-      types: 'poi',    // Search for points of interest
+      types: 'poi',    // Only POIs
       country: 'JP'    // Limit to Japan
     };
 
@@ -1376,12 +1866,101 @@ export class MapController {
       // @ts-ignore - searchLocation is async and returns Promise, await is necessary
       const result = await searchLocation(query, this.config.MAPBOX_ACCESS_TOKEN, options);
 
+      // Automatically display SearchBox POIs on the map (like Rurubu does)
+      if (result.success && result.results && result.results.length > 0) {
+        // Transform SearchBox results to GeoJSON format (same as Rurubu)
+        const geojson = {
+          type: 'FeatureCollection',
+          features: result.results.map(poi => ({
+            type: 'Feature',
+            geometry: {
+              type: 'Point',
+              coordinates: poi.coordinates  // [lng, lat]
+            },
+            properties: {
+              id: poi.mapbox_id,
+              name: poi.name,
+              title: poi.name,
+              address: poi.place_formatted || poi.full_address || '',
+              rank: '-',  // SearchBox POIs don't have ratings
+              poi_category: poi.poi_category,
+              maki: poi.maki,
+              mapbox_id: poi.mapbox_id,
+              source: 'searchbox',  // Mark as SearchBox POI (infrastructure, not starred)
+              // Store additional SearchBox metadata
+              feature_type: poi.feature_type,
+              context: poi.context,
+              full_address: poi.full_address
+            }
+          }))
+        };
+
+        // Determine category from query or first result's poi_category
+        let category = 'other';
+        if (result.results[0]?.poi_category && result.results[0].poi_category.length > 0) {
+          const primaryCategory = result.results[0].poi_category[0].toLowerCase();
+          // Map to standard categories
+          if (primaryCategory.includes('restaurant') || primaryCategory.includes('food')) category = 'eat';
+          else if (primaryCategory.includes('cafe') || primaryCategory.includes('coffee')) category = 'cafe';
+          else if (primaryCategory.includes('shop') || primaryCategory.includes('store')) category = 'buy';
+          else if (primaryCategory.includes('hospital') || primaryCategory.includes('medical') ||
+                   primaryCategory.includes('health') || primaryCategory.includes('clinic')) category = 'hospital';
+          else if (primaryCategory.includes('hotel') || primaryCategory.includes('lodging')) category = 'lodging';
+          else if (primaryCategory.includes('station') || primaryCategory.includes('transport')) category = 'transport';
+        }
+
+        // Store in search history (if app reference is available)
+        if (this.app && this.app.storeRurubuData) {
+          const metadata = {
+            category: category,
+            location: query,  // Use the search query as location
+            source: 'searchbox'  // Mark as SearchBox data
+          };
+          await this.app.storeRurubuData(geojson, metadata);
+        } else {
+          // Fallback: display using executeAddPointsAsMarkers if app is not available
+          const points = result.results.map(poi => ({
+            longitude: poi.coordinates[0],
+            latitude: poi.coordinates[1],
+            title: poi.name,
+            name: poi.name,
+            address: poi.place_formatted || poi.full_address || '',
+            rank: '-',
+            poi_category: poi.poi_category,
+            maki: poi.maki,
+            mapbox_id: poi.mapbox_id
+          }));
+          await this.executeAddPointsAsMarkers({ points });
+        }
+
+        // Return summary (no need for Claude to call add_points_to_map manually)
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              success: true,
+              query: query,
+              count: result.results.length,
+              results: result.results,
+              message: `Found ${result.results.length} locations and displayed them on the map.`
+            }, null, 2)
+          }]
+        };
+      }
+
+      // No results found
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify(result, null, 2)
+          text: JSON.stringify({
+            success: false,
+            query: query,
+            count: 0,
+            message: 'No locations found matching your search.'
+          }, null, 2)
         }]
       };
+
     } catch (error) {
       return {
         content: [{
@@ -1472,6 +2051,20 @@ export class MapController {
     this.markers.forEach(marker => marker.remove());
     this.markers = [];
 
+    // Clear pill-style POI markers
+    if (this.layerMarkers) {
+      this.layerMarkers.forEach((markers, layerName) => {
+        markers.forEach(markerObj => {
+          if (markerObj.marker) {
+            markerObj.marker.remove();
+          } else {
+            markerObj.remove();
+          }
+        });
+      });
+      this.layerMarkers.clear();
+    }
+
     // Clear star markers
     this.clearStarMarkers();
 
@@ -1493,6 +2086,19 @@ export class MapController {
     }
 
     try {
+      // Remove DOM markers if they exist (for pill-style markers)
+      if (this.layerMarkers && this.layerMarkers.has(layerName)) {
+        this.layerMarkers.get(layerName).forEach(markerObj => {
+          if (markerObj.marker) {
+            markerObj.marker.remove();
+          } else {
+            markerObj.remove(); // Backward compatibility
+          }
+        });
+        this.layerMarkers.delete(layerName);
+      }
+
+      // Also try to remove old-style symbol layers (for backward compatibility)
       const layerId = `${layerName}-layer`;
       const sourceId = `${layerName}-source`;
 
@@ -1559,7 +2165,7 @@ export class MapController {
     const colors = {
       driving: '#4264FB',
       'driving-traffic': '#FF6B6B',
-      walking: '#4ECDC4',
+      walking: '#9C27B0',
       cycling: '#95E77D'
     };
     const lineColor = colors[profile] || colors.driving;
@@ -1835,6 +2441,9 @@ export class MapController {
    */
   onMarkerClick(callback) {
     if (!this.map) return;
+
+    // Store callback for DOM markers to use
+    this.poiClickCallback = callback;
 
     // Create click handler
     const clickHandler = (e) => {
@@ -2152,7 +2761,9 @@ export class MapController {
   }
 
   /**
-   * Add icon layer to map from GeoJSON using native Mapbox GL JS
+   * Add icon layer to map from GeoJSON using custom pill-style DOM markers
+   * REVERT NOTE: To revert to symbol layers, restore the original code that uses
+   * this.map.addLayer with type: 'symbol'
    */
   async addIconLayer(geojson, layerName = 'icon-layer') {
     if (!this.map || !geojson) {
@@ -2160,66 +2771,117 @@ export class MapController {
       return;
     }
 
-    await this.loadIconImages();
-
-    // Process features and load genre-specific icons
-    const processedGeoJSON = {
-      ...geojson,
-      features: geojson.features.map(feature => {
-        const props = feature.properties;
-        let iconName, color;
-
-        // Use genre-specific icon if sgenre code is available
-        if (props.sgenre) {
-          const genreIcon = this.getGenreIcon(props.sgenre);
-          iconName = genreIcon.iconName;
-          color = genreIcon.color;
-
-          // Load the genre-specific icon if not already loaded
-          this.loadSingleIcon(iconName, genreIcon.emoji, genreIcon.color);
-        } else {
-          // Fallback to category-based icon
-          iconName = this.getCategoryIcon(props.category);
-          color = this.getCategoryColor(props.category);
-        }
-
-        return {
-          ...feature,
-          properties: {
-            ...props,
-            icon: iconName,
-            color: color
-          }
-        };
-      })
-    };
-
-    const sourceId = `${layerName}-source`;
-    const layerId = `${layerName}-layer`;
-
-
-    if (this.map.getSource(sourceId)) {
-      this.map.removeLayer(layerId);
-      this.map.removeSource(sourceId);
+    // Store markers by layer name for cleanup
+    if (!this.layerMarkers) {
+      this.layerMarkers = new Map();
     }
 
-    this.map.addSource(sourceId, {
-      type: 'geojson',
-      data: processedGeoJSON
-    });
+    // Remove existing markers for this layer
+    if (this.layerMarkers.has(layerName)) {
+      this.layerMarkers.get(layerName).forEach(marker => marker.remove());
+      this.layerMarkers.delete(layerName);
+    }
 
-    this.map.addLayer({
-      id: layerId,
-      type: 'symbol',
-      source: sourceId,
-      layout: {
-        'icon-image': ['get', 'icon'],
-        'icon-size': 1,
-        'icon-allow-overlap': true,
-        'icon-ignore-placement': false
+    const markers = [];
+
+    // Create pill-style DOM marker for each feature
+    geojson.features.forEach(feature => {
+      const { coordinates } = feature.geometry;
+      const props = feature.properties;
+      const [lng, lat] = coordinates;
+
+      // Get emoji icon and color based on data source
+      let icon, bgColor;
+
+      // Priority 1: SearchBox POIs (have source='searchbox')
+      if (props.source === 'searchbox') {
+        const searchBoxIcon = this.getSearchBoxIcon(props.maki, props.poi_category);
+        icon = searchBoxIcon.emoji;
+        bgColor = '#9E9E9E';  // Gray background for infrastructure POIs
       }
+      // Priority 2: Rurubu POIs with specific genre
+      else if (props.sgenre) {
+        const genreIcon = this.getGenreIcon(props.sgenre);
+        icon = genreIcon.emoji;
+        bgColor = genreIcon.color;
+      }
+      // Priority 3: Rurubu POIs with category only
+      else {
+        icon = this.getPOICategoryIcon(props.category);
+        bgColor = this.getCategoryColor(props.category);
+      }
+
+      // Format ranking (A-D or empty)
+      const ranking = props.rank || props.Rank || '';
+      const rankClass = ranking ? `rank-${ranking.toString().toLowerCase()}` : '';
+
+      // Create wrapper for Mapbox positioning (0x0 div)
+      const wrapper = document.createElement('div');
+      wrapper.style.width = '0px';
+      wrapper.style.height = '0px';
+      wrapper.style.position = 'relative';
+
+      // Create pill marker element
+      const markerEl = document.createElement('div');
+      markerEl.className = 'poi-pill-marker';
+
+      // Set gray background for SearchBox POIs (entire pill, not just icon)
+      if (props.source === 'searchbox') {
+        markerEl.style.cssText += 'background: #E0E0E0 !important;';
+      }
+
+      // Position to center the pill on the POI location
+      markerEl.style.position = 'absolute';
+      markerEl.style.left = '-35px'; // Adjusted for larger size
+      markerEl.style.top = '-16px';  // Adjusted for larger size
+
+      // Add icon with colored background
+      const iconEl = document.createElement('div');
+      iconEl.className = 'poi-pill-icon';
+      iconEl.style.cssText = `background: ${bgColor} !important;`;
+      iconEl.textContent = icon;
+      markerEl.appendChild(iconEl);
+
+      // Add ranking if available
+      if (ranking) {
+        const rankingEl = document.createElement('div');
+        rankingEl.className = `poi-pill-ranking ${rankClass}`;
+        rankingEl.textContent = ranking.toString().toUpperCase();
+        markerEl.appendChild(rankingEl);
+      }
+
+      // Add marker element to wrapper
+      wrapper.appendChild(markerEl);
+
+      // Create Mapbox GL JS marker with custom element (no popup, using modal instead)
+      const marker = new mapboxgl.Marker({
+        element: wrapper,
+        anchor: 'center'
+      })
+        .setLngLat([lng, lat]);
+
+      // Add click handler to show POI modal
+      markerEl.addEventListener('click', () => {
+        if (this.poiClickCallback) {
+          this.poiClickCallback(props);
+        }
+      });
+
+      // Add to map
+      marker.addTo(this.map);
+
+      // Store marker with metadata for waypoint matching
+      markers.push({
+        marker: marker,
+        markerEl: markerEl,
+        coordinates: [lng, lat],
+        name: props.name || props.Name || '',
+        props: props  // Store full props for star marker transfer
+      });
     });
 
+    // Store markers for this layer
+    this.layerMarkers.set(layerName, markers);
   }
 
   /**
@@ -2382,6 +3044,18 @@ export class MapController {
    */
   hideAllRoutes() {
     this.routes.forEach(route => {
+      // Handle waypoint numbers integrated into POI markers
+      if (route.waypointNumberLayerId && this.waypointNumbers) {
+        const numbersToHide = this.waypointNumbers.get(route.waypointNumberLayerId);
+        if (numbersToHide) {
+          numbersToHide.forEach(({ numberEl }) => {
+            if (numberEl) {
+              numberEl.style.display = 'none';
+            }
+          });
+        }
+      }
+
       if (route.visible) {
         // Hide the route layer
         if (this.map.getLayer(route.layerName)) {
@@ -2400,6 +3074,18 @@ export class MapController {
    */
   showAllRoutes() {
     this.routes.forEach(route => {
+      // Handle waypoint numbers integrated into POI markers
+      if (route.waypointNumberLayerId && this.waypointNumbers) {
+        const numbersToShow = this.waypointNumbers.get(route.waypointNumberLayerId);
+        if (numbersToShow) {
+          numbersToShow.forEach(({ numberEl }) => {
+            if (numberEl) {
+              numberEl.style.display = 'flex';
+            }
+          });
+        }
+      }
+
       if (!route.visible) {
         // Show the route layer
         if (this.map.getLayer(route.layerName)) {
@@ -2418,6 +3104,28 @@ export class MapController {
    */
   clearAllRoutes() {
     this.routes.forEach(route => {
+      // Handle waypoint numbers integrated into POI markers
+      if (route.waypointNumberLayerId && this.waypointNumbers) {
+        const numbersToRemove = this.waypointNumbers.get(route.waypointNumberLayerId);
+        if (numbersToRemove) {
+          numbersToRemove.forEach(({ markerEl, numberEl, originalLeft, originalNumber }) => {
+            if (numberEl && numberEl.parentNode === markerEl) {
+              if (originalNumber !== null) {
+                // This was a starred POI - restore original recommendation number
+                numberEl.textContent = originalNumber;
+              } else {
+                // This was a regular marker - remove the number element
+                markerEl.removeChild(numberEl);
+                // Restore original left position
+                if (originalLeft !== undefined) {
+                  markerEl.style.left = `${originalLeft}px`;
+                }
+              }
+            }
+          });
+          this.waypointNumbers.delete(route.waypointNumberLayerId);
+        }
+      }
       // Handle new format (multi-waypoint routes with arrows)
       if (route.layers && Array.isArray(route.layers)) {
         route.layers.forEach(layerId => {
@@ -2431,9 +3139,16 @@ export class MapController {
       }
       // Handle old format (point-to-point directions)
       else if (route.layerName) {
+        // Remove arrows layer first (if it exists)
+        const arrowsLayerId = `${route.layerName}-arrows`;
+        if (this.map.getLayer(arrowsLayerId)) {
+          this.map.removeLayer(arrowsLayerId);
+        }
+        // Remove main layer
         if (this.map.getLayer(route.layerName)) {
           this.map.removeLayer(route.layerName);
         }
+        // Remove source (after all layers are removed)
         if (this.map.getSource(route.layerName)) {
           this.map.removeSource(route.layerName);
         }
@@ -2443,6 +3158,11 @@ export class MapController {
       }
     });
     this.routes = [];
+
+    // Clear all waypoint numbers
+    if (this.waypointNumbers) {
+      this.waypointNumbers.clear();
+    }
   }
 
   /**
@@ -2639,7 +3359,7 @@ export class MapController {
    * Draw a route on the map with directional arrows
    * @param {Array<{lng: number, lat: number}>} coordinates - Array of waypoints
    * @param {Object} options - Route options
-   * @param {string} options.color - Route color (default: '#1976d2')
+   * @param {string} options.color - Route color (default: '#9C27B0')
    * @param {string} options.routeId - Optional custom route ID
    * @param {string} options.profile - Routing profile: 'driving', 'walking', 'cycling' (default: 'walking')
    * @returns {Promise<Object>} Route information
@@ -2654,7 +3374,7 @@ export class MapController {
     const colors = {
       driving: '#4264FB',
       'driving-traffic': '#FF6B6B',
-      walking: '#4ECDC4',
+      walking: '#9C27B0',
       cycling: '#95E77D'
     };
     const color = options.color || colors[profile] || colors.walking;
@@ -2763,132 +3483,160 @@ export class MapController {
    * @returns {Object} Layer information
    */
   drawNumberedMarkers(locations, options = {}) {
-    const { color = '#1976d2', layerId = `numbered-markers-${Date.now()}` } = options;
+    const { layerId = `numbered-markers-${Date.now()}` } = options;
 
     try {
-      // Handle overlapping coordinates by adding small offsets
-      const markerOverlapCounter = {};
-      const features = locations.map((location, index) => {
-        const key = `${location.lng}_${location.lat}`;
-        if (!markerOverlapCounter[key]) markerOverlapCounter[key] = 0;
-        const offset = 0.00005 * markerOverlapCounter[key];
-        markerOverlapCounter[key] += 1;
+      // Initialize waypoint number tracking if not exists
+      if (!this.waypointNumbers) {
+        this.waypointNumbers = new Map();
+      }
 
-        return {
-          type: 'Feature',
-          geometry: {
-            type: 'Point',
-            coordinates: [location.lng + offset, location.lat + offset]
-          },
-          properties: {
-            label: location.label || (index + 1).toString(),
-            name: location.name || '',
-            color: color
+      // Remove existing waypoint numbers for this layer
+      if (this.waypointNumbers.has(layerId)) {
+        const existingNumbers = this.waypointNumbers.get(layerId);
+        existingNumbers.forEach(({ markerEl, numberEl, originalLeft, originalNumber }) => {
+          if (numberEl && numberEl.parentNode === markerEl) {
+            if (originalNumber !== null) {
+              // This was a starred POI - restore original recommendation number
+              numberEl.textContent = originalNumber;
+            } else {
+              // This was a regular marker - remove the number element
+              markerEl.removeChild(numberEl);
+              // Restore original left position
+              if (originalLeft !== undefined) {
+                markerEl.style.left = `${originalLeft}px`;
+              }
+            }
           }
-        };
-      });
-
-      const geojson = {
-        type: 'FeatureCollection',
-        features: features
-      };
-
-      // Remove existing layer if it exists
-      if (this.map.getLayer(layerId)) {
-        this.map.removeLayer(layerId);
-      }
-      if (this.map.getLayer(`${layerId}-bg`)) {
-        this.map.removeLayer(`${layerId}-bg`);
-      }
-      if (this.map.getSource(layerId)) {
-        this.map.removeSource(layerId);
+        });
+        this.waypointNumbers.delete(layerId);
       }
 
-      // Add source
-      this.map.addSource(layerId, {
-        type: 'geojson',
-        data: geojson
-      });
+      const modifiedMarkers = [];
 
-      // Add background circle layer (offset to upper-right)
-      this.map.addLayer({
-        id: `${layerId}-bg`,
-        type: 'circle',
-        source: layerId,
-        paint: {
-          'circle-radius': 16,
-          'circle-color': ['get', 'color'],
-          'circle-stroke-width': 2,
-          'circle-stroke-color': '#ffffff',
-          'circle-translate': [24, -24]  // Offset to upper-right (x: right, y: up)
-        }
-      });
+      // Get star markers only - waypoint numbers are only for itineraries with starred POIs
+      const allPOIMarkers = [];
 
-      // Add text layer for numbers (offset to upper-right)
-      this.map.addLayer({
-        id: layerId,
-        type: 'symbol',
-        source: layerId,
-        layout: {
-          'text-field': ['get', 'label'],
-          'text-font': ['DIN Pro Bold', 'Arial Unicode MS Bold'],
-          'text-size': 14,
-          'text-allow-overlap': true,
-          'text-ignore-placement': true,
-          'text-offset': [1.5, -1.5]  // Offset to upper-right in ems
-        },
-        paint: {
-          'text-color': '#ffffff',
-          'text-halo-color': 'rgba(0, 0, 0, 0.3)',
-          'text-halo-width': 1
-        }
-      });
-
-      // Move both layers to the very top so they're never hidden
-      this.map.moveLayer(`${layerId}-bg`);
-      this.map.moveLayer(layerId);
-
-      // Add hover popup
-      const popup = new mapboxgl.Popup({
-        closeButton: false,
-        closeOnClick: false,
-        offset: [0, -20]
-      });
-
-      const mouseEnterHandler = (e) => {
-        if (e.features.length > 0) {
-          this.map.getCanvas().style.cursor = 'pointer';
-          const feature = e.features[0];
-          const name = feature.properties.name;
-          if (name) {
-            popup
-              .setLngLat(e.features[0].geometry.coordinates)
-              .setHTML(`<div style="padding: 8px; font-weight: bold;">${name}</div>`)
-              .addTo(this.map);
+      if (this.starMarkers && this.starMarkers.length > 0) {
+        this.starMarkers.forEach(marker => {
+          const lngLat = marker.getLngLat();
+          const element = marker.getElement();
+          const markerEl = element.querySelector('.star-pill-marker');
+          if (markerEl) {
+            allPOIMarkers.push({
+              marker: marker,
+              markerEl: markerEl,
+              coordinates: [lngLat.lng, lngLat.lat],
+              props: marker._poiData || {}
+            });
           }
+        });
+      }
+
+      // For each waypoint location, find the closest POI marker and add number
+      locations.forEach((location, index) => {
+        const targetLng = location.lng || location.coordinates?.[0];
+        const targetLat = location.lat || location.coordinates?.[1];
+        const label = location.label || (index + 1).toString();
+
+        if (!targetLng || !targetLat) {
+          return;
         }
-      };
 
-      const mouseLeaveHandler = () => {
-        this.map.getCanvas().style.cursor = '';
-        popup.remove();
-      };
+        // Find closest POI marker
+        let closestMarker = null;
+        let minDistance = Infinity;
 
-      // Add tracked event listeners for both layers
-      this.addMapListener(`${layerId}-bg`, 'mouseenter', mouseEnterHandler);
-      this.addMapListener(`${layerId}-bg`, 'mouseleave', mouseLeaveHandler);
-      this.addMapListener(layerId, 'mouseenter', mouseEnterHandler);
-      this.addMapListener(layerId, 'mouseleave', mouseLeaveHandler);
+        allPOIMarkers.forEach(markerObj => {
+          const [markerLng, markerLat] = markerObj.coordinates;
+          const distance = Math.sqrt(
+            Math.pow(markerLng - targetLng, 2) +
+            Math.pow(markerLat - targetLat, 2)
+          );
+
+          if (distance < minDistance) {
+            minDistance = distance;
+            closestMarker = markerObj;
+          }
+        });
+
+        // If found a close enough marker (within ~100m), add waypoint number
+        if (closestMarker && minDistance < 0.001) {
+          const markerEl = closestMarker.markerEl;
+
+          // Check if a number already exists (from recommendation numbering)
+          const existingNumberEl = markerEl.querySelector('.poi-waypoint-number');
+          let originalNumber = null;
+
+          if (existingNumberEl) {
+            // Store original number text so we can restore it later
+            originalNumber = existingNumberEl.textContent;
+            // Update existing number with waypoint label instead of adding a new one
+            existingNumberEl.textContent = label;
+            // No need to adjust positioning - already sized for a number
+          } else {
+            // Create new waypoint number element
+            const numberEl = document.createElement('div');
+            numberEl.className = 'poi-waypoint-number';
+            numberEl.textContent = label;
+
+            // Insert at the beginning of the pill
+            markerEl.insertBefore(numberEl, markerEl.firstChild);
+
+            // Force layout recalculation by accessing offsetHeight
+            void markerEl.offsetHeight;
+
+            // Also adjust the left offset since the pill is now wider
+            const currentLeft = parseInt(markerEl.style.left) || -35;
+            markerEl.style.left = `${currentLeft - 15}px`; // Shift left by ~15px for the number
+          }
+
+          // Update the click handler to use waypoint data if available
+          // Clone the event listeners by replacing the element
+          const newMarkerEl = markerEl.cloneNode(true);
+          markerEl.parentNode.replaceChild(newMarkerEl, markerEl);
+
+          // Add new click handler with waypoint-specific data
+          newMarkerEl.addEventListener('click', () => {
+            if (this.poiClickCallback) {
+              // Merge waypoint location data with original POI props
+              const waypointProps = {
+                ...closestMarker.props,
+                ...(location.name && { name: location.name }),
+                ...(location.address && { address: location.address }),
+                ...(location.tel && { tel: location.tel }),
+                ...(location.time && { time: location.time }),
+                ...(location.price && { price: location.price }),
+                ...(location.rank && { rank: location.rank }),
+                ...(location.photo && { photo: location.photo }),
+                ...(location.summary && { summary: location.summary })
+              };
+              this.poiClickCallback(waypointProps);
+            }
+          });
+
+          modifiedMarkers.push({
+            markerEl: newMarkerEl,
+            numberEl: newMarkerEl.querySelector('.poi-waypoint-number'),
+            originalLeft: existingNumberEl ? null : currentLeft, // Don't store originalLeft if we updated existing number
+            originalNumber: originalNumber // Store original recommendation number to restore later
+          });
+        }
+      });
+
+      // Store modified markers for cleanup
+      this.waypointNumbers.set(layerId, modifiedMarkers);
 
       // Track for cleanup
       this.routes.push({
         id: layerId,
-        layers: [`${layerId}-bg`, layerId],
-        source: layerId,
-        type: 'numbered-markers'
+        layers: [],
+        source: null,
+        type: 'numbered-markers',
+        waypointNumberLayerId: layerId
       });
 
-      return { layerId, featureCount: locations.length };
+      return { layerId, featureCount: modifiedMarkers.length };
 
     } catch (error) {
       console.error('[Map] Error adding numbered markers:', error);

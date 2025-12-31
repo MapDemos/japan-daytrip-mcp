@@ -193,11 +193,11 @@ export class RurubuMCPClient {
             },
             mgenre: {
               type: 'string',
-              description: 'Optional: Medium genre code for precise category filtering. Available codes: SEE (lgenre=1): 10=Nature, 11=Temples/Shrines/Churches, 12=Buildings/Historic Sites, 13=Zoos/Gardens/Parks, 14=Museums/Art Museums, 19=Other | PLAY (lgenre=2): 20=Theme Parks, 21=Outdoor/Sports, 22=Experience Facilities, 29=Other | EAT (lgenre=3): 30=Japanese Food, 32=Western Food, 36=Noodles, 37=Foreign Cuisine, 38=Flour-based (okonomiyaki/takoyaki), 39=Other | CAFE (lgenre=4): 40=Cafes/Sweets | NIGHTLIFE (lgenre=5): 50=Izakaya/Bars | BUY (lgenre=6): 60=Shopping Buildings, 61=Fashion/Goods, 62=Folk Crafts, 63=Groceries/Alcohol | ONSEN (lgenre=7): 71=Day Trip Onsen, 72=Bathing Facilities, 73=Other Onsen | OTHER (lgenre=9): 91=Other'
+              description: 'Optional: Medium genre code for precise filtering (26 codes). Common: 11=Temples/Shrines, 20=Theme Parks, 30=Japanese Food, 36=Noodles, 37=Foreign Cuisine, 40=Cafes/Sweets, 50=Izakaya/Bars, 60=Shopping, 71=Day Trip Onsen. Use get_genre_codes tool for complete list.'
             },
             sgenre: {
               type: 'string',
-              description: 'Optional: Small genre code for ultra-specific filtering (134 codes available, use get_genre_codes tool for complete list). Popular examples: NATURE: 101=Lakes/Ponds, 102=Capes/Coasts, 103=Rivers/Waterfalls, 104=Mountains, 108=Highlands/Forests, 122=Cherry Blossom Spots, 123=Autumn Foliage Spots | TEMPLES/CULTURE: 131=Temples/Shrines, 132=Historic Buildings, 134=Ruins/Castles, 135=Towers/Observation Decks, 136=Streets/Walking Areas | ATTRACTIONS: 141=Parks, 142=Gardens, 144=Zoos, 145=Aquariums, 146=Combined Zoo/Aquarium, 201=Theme Parks | MUSEUMS: 151=History Museums, 152=Art Museums, 153=Libraries, 154=Memorial Halls | EXPERIENCES: 202=Pottery/Crafts, 203=Cooking, 204=Farm/Fishing, 205=Farm/Orchard Tours, 206=Spa/Massage | OUTDOOR/SPORTS: 211=Tennis, 212=Golf, 221=Beaches, 222=Pools, 223=Fishing, 224=Rafting, 251=Camping/BBQ, 261=Hiking Trails, 262=Cycling | JAPANESE FOOD: 300=Japanese Cuisine, 301=Sushi, 302=Seafood, 303=Chicken, 304=Yakiniku/BBQ, 305=Local Cuisine, 306=Tempura, 307=Tonkatsu, 308=Unagi/Eel | NOODLES: 361=Ramen, 363=Yakisoba, 365=Other Noodles, 368=Soba/Udon | WESTERN/ASIAN: 311=Western Restaurant, 321=French, 322=Italian, 323=Spanish, 324=Thai, 325=Korean, 326=Asian, 330=Chinese, 345=Curry/Indian | OTHER FOOD: 371=Okonomiyaki, 372=Takoyaki, 362=Gyoza | CAFES/SWEETS: 400=Cafe, 410=Cake/Desserts, 420=Tea House | BARS: 510=Izakaya, 511=Beer/Wine, 520=Bar, 530=Club/Live Music | SHOPPING: 600=Department Stores, 610=Fashion, 620=Interior/Goods, 630=Crafts/Pottery, 640=Food/Sake, 650=Sweets, 660=Farm Products | ONSEN: 701=Day-trip Onsen, 702=Bath Facilities. Use get_genre_codes tool to see all 134 codes with Japanese names.'
+              description: 'Optional: Small genre code for specific POI types (134 codes). Common: 131=Temples/Shrines, 301=Sushi, 361=Ramen, 400=Cafe, 142=Gardens, 201=Theme Parks, 322=Italian, 510=Izakaya, 202=Pottery, 204=Farm/Fishing, 261=Hiking. For other genres, use get_genre_codes tool first.'
             },
             filters: {
               type: 'object',
@@ -781,7 +781,7 @@ export class RurubuMCPClient {
           time: item.Time || '',
           tel: item.Tel || '',
           price: item.Price || '',
-          rank: item.Rank || 0,
+          rank: item.Rank ? String(item.Rank).replace(/おすすめ度/g, '').trim().replace(/[Ａ-Ｚａ-ｚ０-９]/g, (s) => String.fromCharCode(s.charCodeAt(0) - 0xFEE0)) : 0,
 
           // Photos
           photo: null,
