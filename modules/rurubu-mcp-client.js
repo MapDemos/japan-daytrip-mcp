@@ -9,8 +9,9 @@
 import { geocodeLocation, extractJapaneseNames } from './mapbox-service-utils.js';
 
 export class RurubuMCPClient {
-  constructor(config) {
+  constructor(config, app = null) {
     this.config = config;  // Store config for Mapbox access token
+    this.app = app;  // Reference to main app for addSearchToHistory
     this.appId = config.RURUBU_APP_ID;
     this.endpoint = config.RURUBU_ENDPOINT;
     this.imageBaseUrl = config.RURUBU_IMAGE_BASE_URL;
@@ -165,7 +166,7 @@ export class RurubuMCPClient {
     return [
       {
         name: 'search_rurubu_pois',
-        description: 'Search for Japanese points of interest (POIs) by category and location. Automatically fetches ALL matching results via pagination (not limited to 100). Returns detailed information including photos, prices, and hours. Categories: see (sightseeing), play (entertainment/activities), eat (restaurants), cafe (cafes/sweets), nightlife (bars/clubs), buy (shopping), onsen (hot springs/spas), other. Locations can be city names in English or Japanese. Supports advanced genre and filter parameters for precise searches.',
+        description: 'Search for Japanese points of interest (POIs) by category and location. Automatically fetches ALL matching results via pagination (not limited to 100). Returns detailed information including photos, prices, and hours. Categories: see (sightseeing), play (entertainment/activities), eat (restaurants), cafe (cafes/sweets), nightlife (bars/clubs), buy (shopping), onsen (hot springs/spas), other. Locations can be city names in English or Japanese. Supports advanced genre and filter parameters for precise searches. NOTE: Results are stored in memory but NOT automatically displayed on map (prevents clutter). Use highlight_recommended_pois to show your curated picks (3-5 POIs). If user asks to see all results, use show_search_results tool.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -532,8 +533,17 @@ export class RurubuMCPClient {
         features: uniqueFeatures
       };
 
-      // Prepare result
+      // Add search to history and get search ID
+      const searchId = await this.app.storeRurubuData(finalGeoJSON, {
+        category: category,
+        location: location,
+        jis_code: jisCodes[0], // Primary JIS code
+        pages: totalPages
+      });
+
+      // Prepare result with search ID
       const result = {
+        search_id: searchId, // Include search ID so Claude can reference it later
         category: category,
         location: location,
         jis_codes: jisCodes,

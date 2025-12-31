@@ -1271,6 +1271,8 @@ export class MapController {
         const [lng, lat] = coordinates;
         const recommendationNumber = index + 1; // 1-based numbering
 
+        console.log(`[DEBUG highlight] POI ${index + 1}:`, { id, name: name?.substring(0, 30), coordinates });
+
         // Find and hide the matching base POI marker, transfer waypoint number and props if present
         let waypointNumber = null;
         let baseProps = null;
@@ -1329,7 +1331,36 @@ export class MapController {
         }
 
         // Use props from base marker if available, otherwise look up from store
-        const poiData = baseProps || this.app?.poiDataStore?.get(name) || {};
+        // Try ID-based lookup first (more reliable), then fall back to name
+        let poiData = baseProps;
+        if (!poiData && this.app?.poiDataStore) {
+          // Try to find by ID first
+          if (id) {
+            for (const [storeName, storeData] of this.app.poiDataStore.entries()) {
+              if (String(storeData.id) === String(id)) {
+                poiData = storeData;
+                break;
+              }
+            }
+          }
+          // Fall back to name lookup if ID didn't match
+          if (!poiData) {
+            poiData = this.app.poiDataStore.get(name);
+          }
+        }
+        // Default to empty object if still not found
+        poiData = poiData || {};
+
+        console.log('[DEBUG highlight] Data lookup:', {
+          id,
+          name: name?.substring(0, 30),
+          hasBaseProps: !!baseProps,
+          foundById: !!(id && poiData.id),
+          foundByName: !!this.app?.poiDataStore?.get(name),
+          poiDataKeys: Object.keys(poiData),
+          actualName: poiData.name?.substring(0, 30),
+          actualId: poiData.id
+        });
 
         // Get emoji icon and color based on data source
         // Priority: SearchBox (maki/poi_category) > Rurubu (sgenre/category) > default
@@ -1362,6 +1393,7 @@ export class MapController {
         wrapper.style.width = '0px';
         wrapper.style.height = '0px';
         wrapper.style.position = 'relative';
+        wrapper.style.zIndex = '1000'; // Ensure star markers appear above regular POI markers
 
         // Create pill marker element (same style as regular POI markers)
         const markerEl = document.createElement('div');
@@ -1432,6 +1464,21 @@ export class MapController {
 
         this.starMarkers.push(marker);
       });
+
+      // Fit map bounds to show all recommended POIs
+      if (pois.length > 0) {
+        const bounds = new mapboxgl.LngLatBounds();
+        pois.forEach(poi => {
+          bounds.extend(poi.coordinates);
+        });
+
+        // Fit with padding
+        this.map.fitBounds(bounds, {
+          padding: { top: 100, bottom: 100, left: 100, right: 100 },
+          maxZoom: 15, // Don't zoom in too close
+          duration: 1000 // Smooth animation
+        });
+      }
 
       return {
         content: [{
@@ -2820,6 +2867,7 @@ export class MapController {
       wrapper.style.width = '0px';
       wrapper.style.height = '0px';
       wrapper.style.position = 'relative';
+      wrapper.style.zIndex = '100'; // Lower than star markers (1000) to ensure stars appear on top
 
       // Create pill marker element
       const markerEl = document.createElement('div');

@@ -80,7 +80,7 @@ class JapanDayTripApp {
       this.addSystemMessage(this.i18n.t('system.welcome'));
 
       // Initialize Rurubu MCP (client-side)
-      this.rurubuMCP = new RurubuMCPClient(this.config);
+      this.rurubuMCP = new RurubuMCPClient(this.config, this); // Pass app reference
       await this.rurubuMCP.initialize();
 
       // Initialize Map Controller
@@ -1037,12 +1037,12 @@ class JapanDayTripApp {
       count: geojson.features.length,
       pages: metadata.pages || 1,
       geojson: geojson,
-      visible: true // Start as visible
+      visible: false // Not displayed by default (prevents clutter)
     };
 
-    // Store in history
+    // Store in history (but NOT in visibleSearchIds since layer is not displayed)
     this.searchHistory.set(searchId, searchRecord);
-    this.visibleSearchIds.add(searchId);
+    // Note: visibleSearchIds will be updated when show_search_results is called
 
     // Store POI details for quick lookup with LRU eviction
     geojson.features.forEach(feature => {
@@ -1066,30 +1066,12 @@ class JapanDayTripApp {
       }
     });
 
-    // AUTOMATICALLY display on map with icon layers
-    try {
-      // Clear old layers first if this is the first search
-      if (this.visibleSearchIds.size === 1) {
-        this.mapController.executeTool('clear_map_layers', {}).catch((error) => {
-          errorLogger.warn('Map Layers', 'Failed to clear map layers for first search', {
-            searchId,
-            error: error.message
-          });
-        });
-      }
-
-      // Add icon layer with layer name based on search ID
-      const layerName = `search-layer-${searchId}`;
-      await this.mapController.addIconLayer(geojson, layerName);
-
-      // Fit map bounds to show all newly added POIs
-      const bounds = this.mapController.calculateGeojsonBounds(geojson);
-      if (bounds) {
-        this.mapController.fitBounds(bounds);
-      }
-    } catch (error) {
-      errorLogger.log('POI Display', error, { searchId, featureCount: geojson.features.length });
-    }
+    // Store search results in memory but DON'T automatically display on map
+    // This prevents map clutter (100+ POI icons)
+    // Results will be shown only when:
+    // 1. Claude calls highlight_recommended_pois (shows 3-5 curated picks), OR
+    // 2. User explicitly asks to see all results (Claude calls show_search_results tool)
+    // Note: Layer can be added later via showSearchResults(searchId) method
 
     return searchId;
   }
@@ -1119,8 +1101,10 @@ class JapanDayTripApp {
   async showSearchResults(searchId) {
     const search = this.searchHistory.get(searchId);
     if (!search) {
+      console.error('[DEBUG showSearchResults] Search not found:', searchId);
       throw new Error(`Search ${searchId} not found in history`);
     }
+
 
     if (search.visible) {
       return;
@@ -1451,9 +1435,9 @@ class JapanDayTripApp {
 
     const allPOIs = [];
 
-    // Collect POIs from all visible search layers
-    this.visibleSearchIds.forEach(searchId => {
-      const search = this.searchHistory.get(searchId);
+    // Collect POIs from ALL searches in history (not just visible ones)
+    // This allows get_poi_summary to work even when layers aren't displayed on map
+    this.searchHistory.forEach((search, searchId) => {
       if (!search || !search.geojson) return;
 
       // Filter by category if specified (category filter at search level)
@@ -1543,11 +1527,8 @@ class JapanDayTripApp {
    * @returns {Object} Full POI details
    */
   getPOIDetails(ids = []) {
-    console.log('[DEBUG getPOIDetails] Called with IDs:', ids);
-    console.log('[DEBUG getPOIDetails] IDs length:', ids.length);
 
     if (!Array.isArray(ids) || ids.length === 0) {
-      console.log('[DEBUG getPOIDetails] No IDs provided, returning error');
       return {
         pois: [],
         count: 0,
@@ -1557,32 +1538,26 @@ class JapanDayTripApp {
 
     const detailedPOIs = [];
     const idsSet = new Set(ids);
-    console.log('[DEBUG getPOIDetails] IDs set:', Array.from(idsSet));
-    console.log('[DEBUG getPOIDetails] Visible search IDs:', Array.from(this.visibleSearchIds));
 
-    // Search through all visible search layers
-    this.visibleSearchIds.forEach(searchId => {
-      const search = this.searchHistory.get(searchId);
+    // Search through ALL searches in history (not just visible ones)
+    // This allows get_poi_details to work even when layers aren't displayed on map
+    this.searchHistory.forEach((search, searchId) => {
       if (!search || !search.geojson) {
-        console.log(`[DEBUG getPOIDetails] Search ${searchId} not found or no geojson`);
         return;
       }
 
-      console.log(`[DEBUG getPOIDetails] Checking search ${searchId}, category: ${search.category}, features: ${search.geojson.features.length}`);
 
       search.geojson.features.forEach((feature, idx) => {
         const props = feature.properties;
 
         // Log first 3 feature IDs for debugging
         if (idx < 3) {
-          console.log(`[DEBUG getPOIDetails] Feature ${idx} ID: "${props.id}" (type: ${typeof props.id}), name: ${props.name}`);
         }
 
         // Check if this POI is in the requested IDs
         // Convert to string for comparison (IDs come as strings from Claude, stored as numbers)
         const idStr = String(props.id);
         if (idsSet.has(idStr)) {
-          console.log(`[DEBUG getPOIDetails] MATCH FOUND! ID: ${props.id}`);
           const [lng, lat] = feature.geometry.coordinates;
 
           // Return FULL details
@@ -1612,9 +1587,6 @@ class JapanDayTripApp {
       });
     });
 
-    console.log('[DEBUG getPOIDetails] Found POIs:', detailedPOIs.length);
-    console.log('[DEBUG getPOIDetails] Not found IDs:', Array.from(idsSet));
-    console.log('[DEBUG getPOIDetails] Returning POIs:', detailedPOIs.map(p => ({ id: p.id, name: p.name })));
 
     return {
       pois: detailedPOIs,
@@ -1681,9 +1653,7 @@ class JapanDayTripApp {
         }
 
         case 'get_poi_details': {
-          console.log('[DEBUG TOOL] get_poi_details called with args:', args);
           const details = this.getPOIDetails(args.ids);
-          console.log('[DEBUG TOOL] get_poi_details returning:', details);
           return {
             content: [{
               type: 'text',
