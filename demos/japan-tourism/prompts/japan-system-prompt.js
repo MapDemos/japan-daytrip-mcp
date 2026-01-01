@@ -12,14 +12,9 @@ import { ClaudeClient } from '@mapdemos/ai-framework/ai';
 
 export function buildJapanTravelPrompt(context) {
   // Use the framework's reference Japan travel prompt
-  // This is a temporary workaround - the full prompt should be copied here
-  // or extracted to a separate file for the demo
-  const tempClient = {
-    i18n: context.i18n,
-    buildJapanTravelPrompt: ClaudeClient.prototype.buildJapanTravelPrompt
-  };
-
-  return tempClient.buildJapanTravelPrompt(
+  // Call it with proper context binding so `this.i18n` works
+  return ClaudeClient.prototype.buildJapanTravelPrompt.call(
+    { i18n: context.i18n },
     context.userLocation,
     context.mapView
   );
