@@ -32,7 +32,7 @@ export function buildJapanTravelPrompt(context) {
 
   // Build map view context
   let mapViewContext = '';
-  if (mapView) {
+  if (mapView && mapView.center && mapView.center.lat !== undefined && mapView.center.lng !== undefined && mapView.zoom !== undefined) {
     const { center, zoom, placeName, name } = mapView;
     const coords = `${center.lat.toFixed(4)}°N, ${center.lng.toFixed(4)}°E`;
     if (placeName || name) {

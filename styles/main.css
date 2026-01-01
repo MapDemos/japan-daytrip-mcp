@@ -664,7 +664,40 @@ body {
 }
 
 .thinking-header {
-  display: none; /* Hidden - status shows inline */
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.thinking-icon {
+  font-size: 16px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.thinking-title {
+  color: white;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: var(--font-family-mono);
+}
+
+.thinking-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 .thinking-steps {
