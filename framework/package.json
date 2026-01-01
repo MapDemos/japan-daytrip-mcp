@@ -1,0 +1,38 @@
+{
+  "name": "mapbox-ai-framework",
+  "version": "1.0.0",
+  "description": "Framework for building AI-powered map applications with Mapbox GL JS and Claude/Gemini",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./core": "./src/core/index.js",
+    "./data": "./src/data/index.js",
+    "./map": "./src/map/index.js",
+    "./ai": "./src/ai/index.js",
+    "./lambda": "./src/lambda/handler.js"
+  },
+  "keywords": [
+    "mapbox",
+    "ai",
+    "claude",
+    "gemini",
+    "mcp",
+    "framework",
+    "geospatial",
+    "map",
+    "llm"
+  ],
+  "author": "Mapbox Solutions Architecture",
+  "license": "ISC",
+  "peerDependencies": {
+    "mapbox-gl": "^3.15.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MapDemos/mapbox-ai-framework.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MapDemos/mapbox-ai-framework/issues"
+  }
+}
