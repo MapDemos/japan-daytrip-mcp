@@ -378,5 +378,50 @@ Simply:
 ---
 
 **Last Updated**: 2026-01-01
-**Status**: ✅ 100% Complete - Framework working, tested, and documented
-**Result**: Ready to create new domain demos in <2 hours!
+**Status**: ✅ 100% Complete - Framework extracted to npm package
+**Result**: Framework published as `@mapdemos/ai-framework@0.1.0` on GitHub Packages
+
+---
+
+## 🎉 Final Result: npm Package Created!
+
+The framework has been successfully extracted to a separate npm-installable package:
+
+**Package**: `@mapdemos/ai-framework@0.1.0`
+**Registry**: GitHub Packages (private)
+**Repository**: https://github.com/MapDemos/mapbox-ai-framework
+
+### Installation (For Future Projects)
+
+```bash
+# 1. Configure npm
+echo "@mapdemos:registry=https://npm.pkg.github.com" > .npmrc
+
+# 2. Install package
+npm install @mapdemos/ai-framework
+
+# 3. Import and use
+import { ClaudeClient } from '@mapdemos/ai-framework/ai';
+import { MapController } from '@mapdemos/ai-framework/map';
+import { I18n, ThinkingSimulator } from '@mapdemos/ai-framework/core';
+import { DataSourceBase } from '@mapdemos/ai-framework/data';
+```
+
+### Cleanup Completed
+
+**Removed from japan-daytrip-mcp:**
+- ❌ `framework/` folder (8,454 lines) → Now `@mapdemos/ai-framework` npm package
+- ❌ `modules/` folder (duplicates) → Framework code moved to npm
+- ❌ `data/` folder (duplicates) → Moved to `demos/japan-tourism/data/`
+
+**What Remains:**
+- ✅ `demos/japan-tourism/` - Domain-specific demo (~500 lines)
+- ✅ `.npmrc` - GitHub Packages configuration
+- ✅ `package.json` - Now includes `@mapdemos/ai-framework@0.1.0`
+
+**Benefits Achieved:**
+- 🎯 Framework is reusable across all MapDemos projects
+- 📦 Standard npm workflow (install, update, version)
+- 🔒 Private package on GitHub Packages
+- 📝 Complete documentation with installation instructions
+- ✨ Clean demo codebase (8,900+ lines removed)
