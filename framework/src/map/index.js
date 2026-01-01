@@ -10,3 +10,5 @@ export {
   getIsochrone,
   extractJapaneseNames
 } from './mapbox-service-utils.js';
+
+export { MapController } from './map-controller.js';
