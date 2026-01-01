@@ -1514,9 +1514,9 @@ class JapanDayTripApp {
 
   /**
    * Parse time string and extract closing time
-   * Handles common Japanese time formats
+   * Handles common Japanese time formats and edge cases
    * @param {string} timeStr - Time string like "9:00-21:00" or "24時間営業"
-   * @returns {Object|null} {closes_at: "21:00", is_24h: boolean} or null if unparseable
+   * @returns {Object|null} {closes_at: "21:00", is_24h: boolean, irregular: boolean} or null if unparseable
    */
   parseTimeString(timeStr) {
     if (!timeStr || typeof timeStr !== 'string') return null;
@@ -1525,11 +1525,37 @@ class JapanDayTripApp {
 
     // Check for 24-hour places
     if (str.includes('24時間') || str.includes('24h') || str.includes('24H')) {
-      return { closes_at: '24:00', is_24h: true };
+      return { closes_at: '24:00', is_24h: true, irregular: false };
+    }
+
+    // Check for irregular/variable hours (common in Japanese)
+    const irregularPatterns = [
+      '不定休', '不規則', '不定期', 'irregular', 'varies',
+      '要確認', '応相談', 'check', '確認'
+    ];
+    for (const pattern of irregularPatterns) {
+      if (str.includes(pattern)) {
+        return { closes_at: null, is_24h: false, irregular: true };
+      }
+    }
+
+    // Check for closed/休み
+    if (str.includes('定休') || str.includes('休業') || str.includes('closed')) {
+      return { closes_at: null, is_24h: false, irregular: true };
     }
 
     // Try to extract closing time from common formats
     // Formats: "9:00-21:00", "9:00~21:00", "9時-21時", "11:00~14:00, 17:00~22:00"
+
+    // Handle overnight hours (e.g., "18:00-翌2:00", "18:00-next day 2:00")
+    const overnightMatch = str.match(/(\d{1,2}):(\d{2})\s*[-~～]\s*(?:翌|next day|翌日)\s*(\d{1,2}):(\d{2})/i);
+    if (overnightMatch && overnightMatch.length >= 5) {
+      const closeHour = parseInt(overnightMatch[3]);
+      const closeMin = overnightMatch[4];
+      // Convert to 24+ hour format (e.g., 2:00 next day = 26:00)
+      const adjustedHour = (closeHour + 24).toString().padStart(2, '0');
+      return { closes_at: `${adjustedHour}:${closeMin}`, is_24h: false, irregular: false };
+    }
 
     // Match HH:MM-HH:MM or HH:MM~HH:MM
     const match1 = str.match(/(\d{1,2}):(\d{2})\s*[-~～]\s*(\d{1,2}):(\d{2})/g);
@@ -1538,9 +1564,19 @@ class JapanDayTripApp {
       const lastRange = match1[match1.length - 1];
       const parts = lastRange.match(/(\d{1,2}):(\d{2})\s*[-~～]\s*(\d{1,2}):(\d{2})/);
       if (parts && parts.length >= 5 && parts[3] && parts[4]) {
-        const closeHour = parts[3].padStart(2, '0');
+        const openHour = parseInt(parts[1]);
+        const closeHour = parseInt(parts[3]);
         const closeMin = parts[4];
-        return { closes_at: `${closeHour}:${closeMin}`, is_24h: false };
+
+        // Detect overnight hours (close time < open time suggests next day)
+        // e.g., "22:00-2:00" likely means 22:00 to 2:00 next day
+        let adjustedCloseHour = closeHour;
+        if (closeHour < openHour && closeHour < 12) {
+          adjustedCloseHour = closeHour + 24; // Convert to 24+ format
+        }
+
+        const formattedHour = adjustedCloseHour.toString().padStart(2, '0');
+        return { closes_at: `${formattedHour}:${closeMin}`, is_24h: false, irregular: false };
       }
     }
 
@@ -1550,8 +1586,17 @@ class JapanDayTripApp {
       const lastRange = match2[match2.length - 1];
       const parts = lastRange.match(/(\d{1,2})時\s*[-~～]\s*(\d{1,2})時/);
       if (parts && parts.length >= 3 && parts[2]) {
-        const closeHour = parts[2].padStart(2, '0');
-        return { closes_at: `${closeHour}:00`, is_24h: false };
+        const openHour = parseInt(parts[1]);
+        const closeHour = parseInt(parts[2]);
+
+        // Handle overnight
+        let adjustedCloseHour = closeHour;
+        if (closeHour < openHour && closeHour < 12) {
+          adjustedCloseHour = closeHour + 24;
+        }
+
+        const formattedHour = adjustedCloseHour.toString().padStart(2, '0');
+        return { closes_at: `${formattedHour}:00`, is_24h: false, irregular: false };
       }
     }
 
@@ -1583,6 +1628,9 @@ class JapanDayTripApp {
 
     // 24-hour places are always open
     if (parsed.is_24h) return true;
+
+    // Irregular hours - include them (let Claude/user verify)
+    if (parsed.irregular || !parsed.closes_at) return true;
 
     // Compare closing time with target time
     // Convert to minutes for comparison
