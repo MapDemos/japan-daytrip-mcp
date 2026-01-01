@@ -44,9 +44,13 @@ class JapanDayTripApp {
     // Debounce timer for map view updates
     this.mapViewUpdateTimer = null;
 
-    // Rate limiting
+    // Rate limiting (Token Bucket Algorithm)
     this.lastRequestTime = 0;
     this.MIN_REQUEST_INTERVAL = 1000; // 1 second between requests
+    this.rateLimitTokens = 5; // Start with 5 tokens (burst capacity)
+    this.MAX_RATE_LIMIT_TOKENS = 5; // Max 5 burst requests
+    this.RATE_LIMIT_REFILL_RATE = 1000; // Add 1 token per second
+    this.lastRefillTime = Date.now();
 
     // Input validation
     this.MAX_INPUT_LENGTH = 2000; // Maximum characters in user input
@@ -63,6 +67,9 @@ class JapanDayTripApp {
     // Store event handler references for cleanup
     this.eventHandlers = {};
     this.mapEventHandlers = {};
+
+    // AbortController for automatic event cleanup
+    this.abortController = new AbortController();
   }
 
   /**
@@ -137,11 +144,63 @@ class JapanDayTripApp {
       // Update Claude with initial map view
       this.updateClaudeMapContext();
 
+      // Setup global error handlers
+      this.setupGlobalErrorHandlers();
+
     } catch (error) {
       errorLogger.log('App Initialization', error, { step: 'initialize' });
       this.showError('Initialization Error', error.message);
       this.addSystemMessage(this.i18n.t('system.initError'));
     }
+  }
+
+  /**
+   * Setup global error handlers for unhandled errors
+   */
+  setupGlobalErrorHandlers() {
+    // Handle unhandled promise rejections
+    window.addEventListener('unhandledrejection', (event) => {
+      errorLogger.log('Unhandled Promise Rejection', event.reason, {
+        promise: event.promise
+      });
+
+      // Prevent default console error
+      event.preventDefault();
+
+      // Show user-friendly error for critical failures
+      if (event.reason && event.reason.message) {
+        const message = event.reason.message;
+
+        // Only show modal for significant errors
+        if (message.includes('API') || message.includes('network') || message.includes('fetch')) {
+          this.showError(
+            'Unexpected Error',
+            'An unexpected error occurred. Please try again.'
+          );
+        }
+      }
+    });
+
+    // Handle general JavaScript errors
+    window.addEventListener('error', (event) => {
+      // Skip errors from external scripts (CDN, Mapbox, etc.)
+      if (event.filename && (
+        event.filename.includes('mapbox') ||
+        event.filename.includes('cdn.') ||
+        event.filename.includes('unpkg')
+      )) {
+        return;
+      }
+
+      errorLogger.log('Uncaught Error', event.error || event.message, {
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno
+      });
+
+      // Don't show modal for every error, only log it
+      console.error('[Global Error Handler]', event.error || event.message);
+    });
   }
 
   /**
@@ -188,15 +247,50 @@ class JapanDayTripApp {
       }
     };
 
-    // Attach event listeners
-    document.getElementById('sendBtn').addEventListener('click', this.eventHandlers.sendBtn);
-    document.getElementById('chatInput').addEventListener('keypress', this.eventHandlers.chatInputKeypress);
-    document.getElementById('lang-toggle').addEventListener('click', this.eventHandlers.langToggle);
-    document.getElementById('clearChatBtn').addEventListener('click', this.eventHandlers.clearChatBtn);
-    document.getElementById('closePoiModal').addEventListener('click', this.eventHandlers.closePoiModal);
-    document.getElementById('poiModal').addEventListener('click', this.eventHandlers.poiModalBackdrop);
-    document.getElementById('closeErrorModal').addEventListener('click', this.eventHandlers.closeErrorModal);
-    document.getElementById('errorModal').addEventListener('click', this.eventHandlers.errorModalBackdrop);
+    // Attach event listeners with AbortController for automatic cleanup
+    const signal = this.abortController.signal;
+
+    document.getElementById('sendBtn').addEventListener('click', this.eventHandlers.sendBtn, { signal });
+    document.getElementById('chatInput').addEventListener('keypress', this.eventHandlers.chatInputKeypress, { signal });
+    document.getElementById('lang-toggle').addEventListener('click', this.eventHandlers.langToggle, { signal });
+    document.getElementById('clearChatBtn').addEventListener('click', this.eventHandlers.clearChatBtn, { signal });
+    document.getElementById('closePoiModal').addEventListener('click', this.eventHandlers.closePoiModal, { signal });
+    document.getElementById('poiModal').addEventListener('click', this.eventHandlers.poiModalBackdrop, { signal });
+    document.getElementById('closeErrorModal').addEventListener('click', this.eventHandlers.closeErrorModal, { signal });
+    document.getElementById('errorModal').addEventListener('click', this.eventHandlers.errorModalBackdrop, { signal });
+  }
+
+  /**
+   * Refill rate limit tokens based on time elapsed (Token Bucket Algorithm)
+   */
+  refillRateLimitTokens() {
+    const now = Date.now();
+    const timeSinceRefill = now - this.lastRefillTime;
+    const tokensToAdd = Math.floor(timeSinceRefill / this.RATE_LIMIT_REFILL_RATE);
+
+    if (tokensToAdd > 0) {
+      this.rateLimitTokens = Math.min(
+        this.MAX_RATE_LIMIT_TOKENS,
+        this.rateLimitTokens + tokensToAdd
+      );
+      this.lastRefillTime = now;
+    }
+  }
+
+  /**
+   * Check if request is allowed under rate limit
+   * @returns {Object} { allowed: boolean, tokensRemaining: number, retryAfter: number }
+   */
+  checkRateLimit() {
+    this.refillRateLimitTokens();
+
+    if (this.rateLimitTokens >= 1) {
+      return { allowed: true, tokensRemaining: this.rateLimitTokens - 1 };
+    }
+
+    // Calculate retry time
+    const retryAfter = this.RATE_LIMIT_REFILL_RATE;
+    return { allowed: false, tokensRemaining: 0, retryAfter };
   }
 
   /**
@@ -231,22 +325,25 @@ class JapanDayTripApp {
       return;
     }
 
-    // Rate limiting
-    const now = Date.now();
-    if (this.lastRequestTime && now - this.lastRequestTime < this.MIN_REQUEST_INTERVAL) {
+    // Token Bucket Rate Limiting
+    const rateLimitCheck = this.checkRateLimit();
+    if (!rateLimitCheck.allowed) {
       this.showError(
         this.i18n.t('errors.rateLimitError'),
-        this.i18n.t('errors.rateLimitMessage')
+        this.i18n.t('errors.rateLimitMessage') + ` (Retry in ${Math.ceil(rateLimitCheck.retryAfter / 1000)}s)`
       );
       return;
     }
+
+    // Consume a token
+    this.rateLimitTokens = rateLimitCheck.tokensRemaining;
 
     // Sanitize input
     const sanitized = this.sanitizeUserInput(message);
 
     // Clear input and update timestamp
     input.value = '';
-    this.lastRequestTime = now;
+    this.lastRequestTime = Date.now();
 
     // Add to queue and process
     this.requestQueue.push(sanitized);
@@ -966,18 +1063,34 @@ class JapanDayTripApp {
    * Clear conversation with atomic operations to prevent race conditions
    */
   async clearConversation() {
+    // Prevent multiple simultaneous clear operations
+    if (this.isClearing) {
+      console.log('[Debug] Clear already in progress, ignoring duplicate request');
+      return;
+    }
+
     // Set flag to prevent new requests during clearing
     this.isClearing = true;
 
     try {
-      // If there's an active request, wait for it to complete first
-      // This prevents race conditions where clearing happens during tool execution
-      if (this.activeRequest) {
-        try {
-          await this.activeRequest;
-        } catch (error) {
-          // Ignore errors from the active request we're about to clear anyway
+      // Wait for request queue to drain
+      // This ensures we don't clear while requests are being processed
+      while (this.requestQueue.length > 0 || this.activeRequest) {
+        console.log('[Debug] Waiting for queue to drain:', {
+          queueLength: this.requestQueue.length,
+          hasActiveRequest: !!this.activeRequest
+        });
+
+        if (this.activeRequest) {
+          try {
+            await this.activeRequest;
+          } catch (error) {
+            // Ignore errors from the active request we're about to clear anyway
+          }
         }
+
+        // Small delay to allow queue processing
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
 
       // Clear any queued requests (atomically with clearing flag set)
@@ -2186,55 +2299,29 @@ Rating: [translated rating]`;
    * Remove all event listeners to prevent memory leaks
    */
   removeEventListeners() {
-    // Remove DOM event listeners
-    const sendBtn = document.getElementById('sendBtn');
-    const chatInput = document.getElementById('chatInput');
-    const langToggle = document.getElementById('lang-toggle');
-    const clearChatBtn = document.getElementById('clearChatBtn');
-    const closePoiModal = document.getElementById('closePoiModal');
-    const poiModal = document.getElementById('poiModal');
-    const closeErrorModal = document.getElementById('closeErrorModal');
-    const errorModal = document.getElementById('errorModal');
-    const errorClearChatBtn = document.getElementById('errorClearChatBtn');
+    // Abort all event listeners registered with AbortController
+    // This automatically removes all listeners that were registered with { signal }
+    this.abortController.abort();
 
-    if (sendBtn && this.eventHandlers.sendBtn) {
-      sendBtn.removeEventListener('click', this.eventHandlers.sendBtn);
-    }
-    if (chatInput && this.eventHandlers.chatInputKeypress) {
-      chatInput.removeEventListener('keypress', this.eventHandlers.chatInputKeypress);
-    }
-    if (langToggle && this.eventHandlers.langToggle) {
-      langToggle.removeEventListener('click', this.eventHandlers.langToggle);
-    }
-    if (clearChatBtn && this.eventHandlers.clearChatBtn) {
-      clearChatBtn.removeEventListener('click', this.eventHandlers.clearChatBtn);
-    }
-    if (closePoiModal && this.eventHandlers.closePoiModal) {
-      closePoiModal.removeEventListener('click', this.eventHandlers.closePoiModal);
-    }
-    if (poiModal && this.eventHandlers.poiModalBackdrop) {
-      poiModal.removeEventListener('click', this.eventHandlers.poiModalBackdrop);
-    }
-    if (closeErrorModal && this.eventHandlers.closeErrorModal) {
-      closeErrorModal.removeEventListener('click', this.eventHandlers.closeErrorModal);
-    }
-    if (errorModal && this.eventHandlers.errorModalBackdrop) {
-      errorModal.removeEventListener('click', this.eventHandlers.errorModalBackdrop);
-    }
-    if (errorClearChatBtn && this.eventHandlers.errorClearChatBtn) {
-      errorClearChatBtn.removeEventListener('click', this.eventHandlers.errorClearChatBtn);
-    }
+    // Create a new AbortController for future event listeners
+    this.abortController = new AbortController();
 
-    // Remove map event listeners
+    // Remove map event listeners (not using AbortController)
     if (this.mapController && this.mapController.map && this.mapEventHandlers.moveend) {
       this.mapController.map.off('moveend', this.mapEventHandlers.moveend);
     }
 
-    // Clean up photo image event handlers
+    // Clean up photo image event handlers (set via property assignment)
     const photoImg = document.getElementById('poiPhotoImg');
     if (photoImg) {
       photoImg.onerror = null;
       photoImg.onload = null;
+    }
+
+    // Clean up dynamically added error modal button handlers
+    const errorClearChatBtn = document.getElementById('errorClearChatBtn');
+    if (errorClearChatBtn && this.eventHandlers.errorClearChatBtn) {
+      errorClearChatBtn.removeEventListener('click', this.eventHandlers.errorClearChatBtn);
     }
 
     // Clear handler references
