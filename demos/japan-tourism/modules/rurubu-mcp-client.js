@@ -6,7 +6,7 @@
  * via the Rurubu API with JIS (Japanese Industrial Standard) code support
  */
 
-import { geocodeLocation, extractJapaneseNames } from './mapbox-service-utils.js';
+import { geocodeLocation, extractJapaneseNames } from '../../../framework/src/map/mapbox-service-utils.js';
 
 export class RurubuMCPClient {
   constructor(config, app = null) {

@@ -8,15 +8,12 @@
  */
 
 import { CONFIG, validateConfig } from './config.js';
-import { RurubuMCPClient } from './modules/rurubu-mcp-client.js';
-import { ClaudeClient } from './modules/claude-client.js';
-import { GeminiClient } from './modules/gemini-client.js';
-import { MapController } from './modules/map-controller.js';
-import { I18n } from './modules/i18n.js';
-import { ThinkingSimulator } from './modules/thinking-simulator.js';
-import { reverseGeocode } from './modules/mapbox-service-utils.js';
-import { safeGet, safeGetElement, safeCoordinates, safeArray } from './modules/utils.js';
-import { errorLogger } from './modules/error-logger.js';
+import { RurubuMCPClient } from './demos/japan-tourism/modules/rurubu-mcp-client.js';
+import { ClaudeClient, GeminiClient } from './framework/src/ai/index.js';
+import { MapController, reverseGeocode } from './framework/src/map/index.js';
+import { I18n, ThinkingSimulator, errorLogger, safeGet, safeGetElement, safeCoordinates, safeArray } from './framework/src/core/index.js';
+import { JAPAN_TRANSLATIONS } from './demos/japan-tourism/translations/japan-i18n.js';
+import { JapanThinkingMessages } from './demos/japan-tourism/modules/japan-thinking-messages.js';
 
 /**
  * Async error handling wrapper
@@ -53,11 +50,11 @@ function asyncErrorWrapper(fn, options = {}) {
 class JapanDayTripApp {
   constructor() {
     this.config = CONFIG;
-    this.i18n = new I18n(CONFIG.DEFAULT_LANGUAGE);
+    this.i18n = new I18n(CONFIG.DEFAULT_LANGUAGE, JAPAN_TRANSLATIONS);
     this.rurubuMCP = null;
     this.mapController = null;
     this.claudeClient = null;
-    this.thinkingSimulator = new ThinkingSimulator(this.i18n);
+    this.thinkingSimulator = new ThinkingSimulator(this.i18n, new JapanThinkingMessages());
     this.isProcessing = false;
 
     // Store full POI data with all Rurubu properties

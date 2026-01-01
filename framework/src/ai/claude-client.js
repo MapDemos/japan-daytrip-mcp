@@ -5,7 +5,7 @@
  * - Map Tools MCP (visualization library)
  */
 
-import { errorLogger } from './error-logger.js';
+import { errorLogger } from '../core/error-logger.js';
 
 export class ClaudeClient {
   constructor(apiKey, rurubuMCP, mapController, i18n, config, app = null, onRurubuData = null) {
