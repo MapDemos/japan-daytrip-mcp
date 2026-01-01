@@ -18,6 +18,38 @@ import { reverseGeocode } from './modules/mapbox-service-utils.js';
 import { safeGet, safeGetElement, safeCoordinates, safeArray } from './modules/utils.js';
 import { errorLogger } from './modules/error-logger.js';
 
+/**
+ * Async error handling wrapper
+ * Wraps async functions to provide consistent error handling
+ * @param {Function} fn - Async function to wrap
+ * @param {Object} options - Options for error handling
+ * @returns {Function} Wrapped function
+ */
+function asyncErrorWrapper(fn, options = {}) {
+  const {
+    context = 'Unknown',
+    fallback = null,
+    logError = true,
+    rethrow = false
+  } = options;
+
+  return async function(...args) {
+    try {
+      return await fn.apply(this, args);
+    } catch (error) {
+      if (logError) {
+        errorLogger.log(context, error, { args });
+      }
+
+      if (rethrow) {
+        throw error;
+      }
+
+      return fallback;
+    }
+  };
+}
+
 class JapanDayTripApp {
   constructor() {
     this.config = CONFIG;
@@ -31,7 +63,7 @@ class JapanDayTripApp {
     // Store full POI data with all Rurubu properties
     // Maps POI name to full feature properties with LRU eviction
     this.poiDataStore = new Map();
-    this.MAX_POI_DATA_STORE_SIZE = 1000; // Limit to prevent unbounded growth
+    this.MAX_POI_DATA_STORE_SIZE = this.config.MAX_POI_DATA_STORE_SIZE;
 
     // Search history management
     this.searchHistory = new Map(); // Map<searchId, SearchResult>
@@ -46,18 +78,18 @@ class JapanDayTripApp {
 
     // Rate limiting (Token Bucket Algorithm)
     this.lastRequestTime = 0;
-    this.MIN_REQUEST_INTERVAL = 1000; // 1 second between requests
-    this.rateLimitTokens = 5; // Start with 5 tokens (burst capacity)
-    this.MAX_RATE_LIMIT_TOKENS = 5; // Max 5 burst requests
-    this.RATE_LIMIT_REFILL_RATE = 1000; // Add 1 token per second
+    this.MIN_REQUEST_INTERVAL = this.config.REQUEST_RATE_LIMIT_MS;
+    this.rateLimitTokens = this.config.RATE_LIMIT_BURST_CAPACITY;
+    this.MAX_RATE_LIMIT_TOKENS = this.config.RATE_LIMIT_BURST_CAPACITY;
+    this.RATE_LIMIT_REFILL_RATE = this.config.RATE_LIMIT_REFILL_RATE;
     this.lastRefillTime = Date.now();
 
     // Input validation
-    this.MAX_INPUT_LENGTH = 2000; // Maximum characters in user input
+    this.MAX_INPUT_LENGTH = this.config.MAX_INPUT_LENGTH;
 
     // Translation cache
     this.translationCache = new Map();
-    this.MAX_TRANSLATION_CACHE_SIZE = 100;
+    this.MAX_TRANSLATION_CACHE_SIZE = this.config.MAX_TRANSLATION_CACHE_SIZE;
 
     // Request queue for handling race conditions
     this.requestQueue = [];
