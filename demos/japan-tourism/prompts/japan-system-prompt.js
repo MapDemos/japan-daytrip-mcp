@@ -11,10 +11,16 @@
 import { ClaudeClient } from '@mapdemos/ai-framework/ai';
 
 export function buildJapanTravelPrompt(context) {
+  // Validate context
+  if (!context || !context.i18n) {
+    console.error('[buildJapanTravelPrompt] Invalid context:', context);
+    throw new Error('buildJapanTravelPrompt: context.i18n is required');
+  }
+
   // Use the framework's reference Japan travel prompt
-  // Call it with proper context binding so `this.i18n` works
+  // Pass the entire context as `this` so the method can access this.i18n
   return ClaudeClient.prototype.buildJapanTravelPrompt.call(
-    { i18n: context.i18n },
+    context,
     context.userLocation,
     context.mapView
   );
