@@ -1647,6 +1647,34 @@ export class MapController {
     if (this.hiddenBaseMarkers) {
       this.hiddenBaseMarkers.forEach(markerObj => {
         markerObj.marker.getElement().style.display = '';
+
+        // Clean up any orphaned waypoint numbers from previous routes
+        // These can interfere with new highlight_recommended_pois calls
+        const markerEl = markerObj.markerEl || markerObj.marker.getElement();
+        if (markerEl) {
+          const orphanedNumberEl = markerEl.querySelector('.poi-waypoint-number');
+          if (orphanedNumberEl) {
+            // Check if this number is tracked by an active route
+            let isTrackedByRoute = false;
+            if (this.waypointNumbers) {
+              for (const trackedNumbers of this.waypointNumbers.values()) {
+                if (trackedNumbers.some(t => t.numberEl === orphanedNumberEl)) {
+                  isTrackedByRoute = true;
+                  break;
+                }
+              }
+            }
+
+            // If not tracked by any active route, it's orphaned - remove it
+            if (!isTrackedByRoute) {
+              orphanedNumberEl.remove();
+              // Restore original marker width (remove number spacing)
+              if (markerEl.style.left === '-55px') {
+                markerEl.style.left = '-20px'; // Standard width without number
+              }
+            }
+          }
+        }
       });
       this.hiddenBaseMarkers = [];
     }
