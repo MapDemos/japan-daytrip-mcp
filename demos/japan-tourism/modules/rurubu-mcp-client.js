@@ -534,7 +534,7 @@ export class RurubuMCPClient {
       };
 
       // Add search to history and get search ID
-      const searchId = await this.app.storeRurubuData(finalGeoJSON, {
+      const searchId = await this.app.storeSearchData(finalGeoJSON, {
         category: category,
         location: location,
         jis_code: jisCodes[0], // Primary JIS code
