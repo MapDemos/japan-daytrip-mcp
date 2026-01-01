@@ -109,6 +109,36 @@ export const CONFIG = {
   REQUEST_RATE_LIMIT_MS: 1000,
 
   // ============================================
+  // CACHE & MEMORY LIMITS
+  // ============================================
+
+  // Maximum POI data store size (LRU cache)
+  MAX_POI_DATA_STORE_SIZE: 1000,
+
+  // Maximum translation cache size
+  MAX_TRANSLATION_CACHE_SIZE: 100,
+
+  // ============================================
+  // RATE LIMITING (Client-Side)
+  // ============================================
+
+  // Token bucket: Maximum burst requests allowed
+  RATE_LIMIT_BURST_CAPACITY: 5,
+
+  // Token bucket: Token refill rate (milliseconds per token)
+  RATE_LIMIT_REFILL_RATE: 1000, // 1 token per second
+
+  // ============================================
+  // UI & MAP SETTINGS
+  // ============================================
+
+  // Map marker icon size (pixels)
+  MAP_MARKER_ICON_SIZE: 48,
+
+  // Debounce delay for map view updates (ms)
+  MAP_VIEW_UPDATE_DEBOUNCE: 500,
+
+  // ============================================
   // TOKEN MANAGEMENT
   // ============================================
 
@@ -164,6 +194,7 @@ export const CONFIG = {
  */
 export function validateConfig() {
   const errors = [];
+  const warnings = [];
 
   // Check Mapbox access token
   if (!CONFIG.MAPBOX_ACCESS_TOKEN || CONFIG.MAPBOX_ACCESS_TOKEN.startsWith('YOUR_')) {
@@ -175,13 +206,68 @@ export function validateConfig() {
     errors.push('❌ Claude API proxy endpoint not set');
   }
 
+  // Validate token limits
+  if (CONFIG.MAX_CONTEXT_TOKENS <= 0) {
+    errors.push('❌ MAX_CONTEXT_TOKENS must be greater than 0');
+  }
+
+  if (CONFIG.PRUNE_THRESHOLD_TOKENS <= 0) {
+    errors.push('❌ PRUNE_THRESHOLD_TOKENS must be greater than 0');
+  }
+
+  if (CONFIG.PRUNE_THRESHOLD_TOKENS >= CONFIG.MAX_CONTEXT_TOKENS) {
+    errors.push('❌ PRUNE_THRESHOLD_TOKENS must be less than MAX_CONTEXT_TOKENS');
+  }
+
+  if (CONFIG.WARNING_THRESHOLD_TOKENS >= CONFIG.PRUNE_THRESHOLD_TOKENS) {
+    warnings.push('⚠️  WARNING_THRESHOLD_TOKENS should be less than PRUNE_THRESHOLD_TOKENS');
+  }
+
+  // Validate token ratios (should have reasonable buffer)
+  const pruneRatio = CONFIG.PRUNE_THRESHOLD_TOKENS / CONFIG.MAX_CONTEXT_TOKENS;
+  if (pruneRatio > 0.9) {
+    warnings.push('⚠️  PRUNE_THRESHOLD_TOKENS is too close to MAX_CONTEXT_TOKENS (>90%). Recommend 70-80%.');
+  }
+
+  // Validate MAX_TOKENS (response limit)
+  if (CONFIG.MAX_TOKENS <= 0 || CONFIG.MAX_TOKENS > 8192) {
+    warnings.push('⚠️  MAX_TOKENS should be between 1 and 8192');
+  }
+
+  // Validate model name
+  if (CONFIG.AI_PROVIDER === 'claude' && !CONFIG.CLAUDE_MODEL) {
+    errors.push('❌ CLAUDE_MODEL must be set when using Claude provider');
+  }
+
+  if (CONFIG.AI_PROVIDER === 'gemini' && !CONFIG.GEMINI_MODEL) {
+    errors.push('❌ GEMINI_MODEL must be set when using Gemini provider');
+  }
+
+  // Validate AI provider
+  if (!['claude', 'gemini'].includes(CONFIG.AI_PROVIDER)) {
+    errors.push('❌ AI_PROVIDER must be either "claude" or "gemini"');
+  }
+
+  // Validate Rurubu endpoint
+  if (!CONFIG.RURUBU_ENDPOINT || !CONFIG.RURUBU_ENDPOINT.startsWith('http')) {
+    errors.push('❌ RURUBU_ENDPOINT must be a valid URL');
+  }
+
+  // Display errors
   if (errors.length > 0) {
     console.error('Configuration errors:');
     errors.forEach(error => console.error(error));
     console.error('\n📝 Please update config.js:');
     console.error('   - Mapbox Token: https://account.mapbox.com/access-tokens/');
     console.error('   - Lambda Proxy: Configure CLAUDE_API_PROXY endpoint');
+    console.error('   - Token Limits: Ensure PRUNE_THRESHOLD < MAX_CONTEXT_TOKENS');
     return false;
+  }
+
+  // Display warnings
+  if (warnings.length > 0) {
+    console.warn('Configuration warnings:');
+    warnings.forEach(warning => console.warn(warning));
   }
 
   return true;

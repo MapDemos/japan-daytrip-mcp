@@ -18,6 +18,38 @@ import { reverseGeocode } from './modules/mapbox-service-utils.js';
 import { safeGet, safeGetElement, safeCoordinates, safeArray } from './modules/utils.js';
 import { errorLogger } from './modules/error-logger.js';
 
+/**
+ * Async error handling wrapper
+ * Wraps async functions to provide consistent error handling
+ * @param {Function} fn - Async function to wrap
+ * @param {Object} options - Options for error handling
+ * @returns {Function} Wrapped function
+ */
+function asyncErrorWrapper(fn, options = {}) {
+  const {
+    context = 'Unknown',
+    fallback = null,
+    logError = true,
+    rethrow = false
+  } = options;
+
+  return async function(...args) {
+    try {
+      return await fn.apply(this, args);
+    } catch (error) {
+      if (logError) {
+        errorLogger.log(context, error, { args });
+      }
+
+      if (rethrow) {
+        throw error;
+      }
+
+      return fallback;
+    }
+  };
+}
+
 class JapanDayTripApp {
   constructor() {
     this.config = CONFIG;
@@ -31,7 +63,7 @@ class JapanDayTripApp {
     // Store full POI data with all Rurubu properties
     // Maps POI name to full feature properties with LRU eviction
     this.poiDataStore = new Map();
-    this.MAX_POI_DATA_STORE_SIZE = 1000; // Limit to prevent unbounded growth
+    this.MAX_POI_DATA_STORE_SIZE = this.config.MAX_POI_DATA_STORE_SIZE;
 
     // Search history management
     this.searchHistory = new Map(); // Map<searchId, SearchResult>
@@ -44,16 +76,20 @@ class JapanDayTripApp {
     // Debounce timer for map view updates
     this.mapViewUpdateTimer = null;
 
-    // Rate limiting
+    // Rate limiting (Token Bucket Algorithm)
     this.lastRequestTime = 0;
-    this.MIN_REQUEST_INTERVAL = 1000; // 1 second between requests
+    this.MIN_REQUEST_INTERVAL = this.config.REQUEST_RATE_LIMIT_MS;
+    this.rateLimitTokens = this.config.RATE_LIMIT_BURST_CAPACITY;
+    this.MAX_RATE_LIMIT_TOKENS = this.config.RATE_LIMIT_BURST_CAPACITY;
+    this.RATE_LIMIT_REFILL_RATE = this.config.RATE_LIMIT_REFILL_RATE;
+    this.lastRefillTime = Date.now();
 
     // Input validation
-    this.MAX_INPUT_LENGTH = 2000; // Maximum characters in user input
+    this.MAX_INPUT_LENGTH = this.config.MAX_INPUT_LENGTH;
 
     // Translation cache
     this.translationCache = new Map();
-    this.MAX_TRANSLATION_CACHE_SIZE = 100;
+    this.MAX_TRANSLATION_CACHE_SIZE = this.config.MAX_TRANSLATION_CACHE_SIZE;
 
     // Request queue for handling race conditions
     this.requestQueue = [];
@@ -63,6 +99,9 @@ class JapanDayTripApp {
     // Store event handler references for cleanup
     this.eventHandlers = {};
     this.mapEventHandlers = {};
+
+    // AbortController for automatic event cleanup
+    this.abortController = new AbortController();
   }
 
   /**
@@ -80,7 +119,7 @@ class JapanDayTripApp {
       this.addSystemMessage(this.i18n.t('system.welcome'));
 
       // Initialize Rurubu MCP (client-side)
-      this.rurubuMCP = new RurubuMCPClient(this.config);
+      this.rurubuMCP = new RurubuMCPClient(this.config, this); // Pass app reference
       await this.rurubuMCP.initialize();
 
       // Initialize Map Controller
@@ -137,11 +176,63 @@ class JapanDayTripApp {
       // Update Claude with initial map view
       this.updateClaudeMapContext();
 
+      // Setup global error handlers
+      this.setupGlobalErrorHandlers();
+
     } catch (error) {
       errorLogger.log('App Initialization', error, { step: 'initialize' });
       this.showError('Initialization Error', error.message);
       this.addSystemMessage(this.i18n.t('system.initError'));
     }
+  }
+
+  /**
+   * Setup global error handlers for unhandled errors
+   */
+  setupGlobalErrorHandlers() {
+    // Handle unhandled promise rejections
+    window.addEventListener('unhandledrejection', (event) => {
+      errorLogger.log('Unhandled Promise Rejection', event.reason, {
+        promise: event.promise
+      });
+
+      // Prevent default console error
+      event.preventDefault();
+
+      // Show user-friendly error for critical failures
+      if (event.reason && event.reason.message) {
+        const message = event.reason.message;
+
+        // Only show modal for significant errors
+        if (message.includes('API') || message.includes('network') || message.includes('fetch')) {
+          this.showError(
+            'Unexpected Error',
+            'An unexpected error occurred. Please try again.'
+          );
+        }
+      }
+    });
+
+    // Handle general JavaScript errors
+    window.addEventListener('error', (event) => {
+      // Skip errors from external scripts (CDN, Mapbox, etc.)
+      if (event.filename && (
+        event.filename.includes('mapbox') ||
+        event.filename.includes('cdn.') ||
+        event.filename.includes('unpkg')
+      )) {
+        return;
+      }
+
+      errorLogger.log('Uncaught Error', event.error || event.message, {
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno
+      });
+
+      // Don't show modal for every error, only log it
+      console.error('[Global Error Handler]', event.error || event.message);
+    });
   }
 
   /**
@@ -188,15 +279,50 @@ class JapanDayTripApp {
       }
     };
 
-    // Attach event listeners
-    document.getElementById('sendBtn').addEventListener('click', this.eventHandlers.sendBtn);
-    document.getElementById('chatInput').addEventListener('keypress', this.eventHandlers.chatInputKeypress);
-    document.getElementById('lang-toggle').addEventListener('click', this.eventHandlers.langToggle);
-    document.getElementById('clearChatBtn').addEventListener('click', this.eventHandlers.clearChatBtn);
-    document.getElementById('closePoiModal').addEventListener('click', this.eventHandlers.closePoiModal);
-    document.getElementById('poiModal').addEventListener('click', this.eventHandlers.poiModalBackdrop);
-    document.getElementById('closeErrorModal').addEventListener('click', this.eventHandlers.closeErrorModal);
-    document.getElementById('errorModal').addEventListener('click', this.eventHandlers.errorModalBackdrop);
+    // Attach event listeners with AbortController for automatic cleanup
+    const signal = this.abortController.signal;
+
+    document.getElementById('sendBtn').addEventListener('click', this.eventHandlers.sendBtn, { signal });
+    document.getElementById('chatInput').addEventListener('keypress', this.eventHandlers.chatInputKeypress, { signal });
+    document.getElementById('lang-toggle').addEventListener('click', this.eventHandlers.langToggle, { signal });
+    document.getElementById('clearChatBtn').addEventListener('click', this.eventHandlers.clearChatBtn, { signal });
+    document.getElementById('closePoiModal').addEventListener('click', this.eventHandlers.closePoiModal, { signal });
+    document.getElementById('poiModal').addEventListener('click', this.eventHandlers.poiModalBackdrop, { signal });
+    document.getElementById('closeErrorModal').addEventListener('click', this.eventHandlers.closeErrorModal, { signal });
+    document.getElementById('errorModal').addEventListener('click', this.eventHandlers.errorModalBackdrop, { signal });
+  }
+
+  /**
+   * Refill rate limit tokens based on time elapsed (Token Bucket Algorithm)
+   */
+  refillRateLimitTokens() {
+    const now = Date.now();
+    const timeSinceRefill = now - this.lastRefillTime;
+    const tokensToAdd = Math.floor(timeSinceRefill / this.RATE_LIMIT_REFILL_RATE);
+
+    if (tokensToAdd > 0) {
+      this.rateLimitTokens = Math.min(
+        this.MAX_RATE_LIMIT_TOKENS,
+        this.rateLimitTokens + tokensToAdd
+      );
+      this.lastRefillTime = now;
+    }
+  }
+
+  /**
+   * Check if request is allowed under rate limit
+   * @returns {Object} { allowed: boolean, tokensRemaining: number, retryAfter: number }
+   */
+  checkRateLimit() {
+    this.refillRateLimitTokens();
+
+    if (this.rateLimitTokens >= 1) {
+      return { allowed: true, tokensRemaining: this.rateLimitTokens - 1 };
+    }
+
+    // Calculate retry time
+    const retryAfter = this.RATE_LIMIT_REFILL_RATE;
+    return { allowed: false, tokensRemaining: 0, retryAfter };
   }
 
   /**
@@ -231,22 +357,25 @@ class JapanDayTripApp {
       return;
     }
 
-    // Rate limiting
-    const now = Date.now();
-    if (this.lastRequestTime && now - this.lastRequestTime < this.MIN_REQUEST_INTERVAL) {
+    // Token Bucket Rate Limiting
+    const rateLimitCheck = this.checkRateLimit();
+    if (!rateLimitCheck.allowed) {
       this.showError(
         this.i18n.t('errors.rateLimitError'),
-        this.i18n.t('errors.rateLimitMessage')
+        this.i18n.t('errors.rateLimitMessage') + ` (Retry in ${Math.ceil(rateLimitCheck.retryAfter / 1000)}s)`
       );
       return;
     }
+
+    // Consume a token
+    this.rateLimitTokens = rateLimitCheck.tokensRemaining;
 
     // Sanitize input
     const sanitized = this.sanitizeUserInput(message);
 
     // Clear input and update timestamp
     input.value = '';
-    this.lastRequestTime = now;
+    this.lastRequestTime = Date.now();
 
     // Add to queue and process
     this.requestQueue.push(sanitized);
@@ -321,6 +450,46 @@ class JapanDayTripApp {
     }
 
     return sanitized.trim();
+  }
+
+  /**
+   * Validate photo URL to prevent security issues
+   * Only allows trusted domains and HTTPS protocol
+   * @param {string} url - The URL to validate
+   * @returns {boolean} - True if URL is valid and safe
+   */
+  validatePhotoUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+
+    try {
+      const parsedUrl = new URL(url);
+
+      // Only allow HTTPS protocol (no http, data:, javascript:, etc.)
+      if (parsedUrl.protocol !== 'https:') {
+        return false;
+      }
+
+      // Whitelist of trusted domains for photo URLs
+      const trustedDomains = [
+        'www.j-jti.com',           // Rurubu API
+        'api.mapbox.com',           // Mapbox
+        'images.unsplash.com',      // Unsplash (if used)
+        'cdn.jsdelivr.net',         // CDN for libraries
+        'static-assets.mapbox.com'  // Mapbox static assets
+      ];
+
+      // Check if hostname matches any trusted domain
+      const isValidDomain = trustedDomains.some(domain =>
+        parsedUrl.hostname === domain ||
+        parsedUrl.hostname.endsWith('.' + domain)
+      );
+
+      return isValidDomain;
+    } catch (error) {
+      // Invalid URL format
+      errorLogger.warn('URL Validation', 'Failed to parse photo URL', { url, error: error.message });
+      return false;
+    }
   }
 
   /**
@@ -926,18 +1095,28 @@ class JapanDayTripApp {
    * Clear conversation with atomic operations to prevent race conditions
    */
   async clearConversation() {
+    // Prevent multiple simultaneous clear operations
+    if (this.isClearing) {
+      return;
+    }
+
     // Set flag to prevent new requests during clearing
     this.isClearing = true;
 
     try {
-      // If there's an active request, wait for it to complete first
-      // This prevents race conditions where clearing happens during tool execution
-      if (this.activeRequest) {
-        try {
-          await this.activeRequest;
-        } catch (error) {
-          // Ignore errors from the active request we're about to clear anyway
+      // Wait for request queue to drain
+      // This ensures we don't clear while requests are being processed
+      while (this.requestQueue.length > 0 || this.activeRequest) {
+        if (this.activeRequest) {
+          try {
+            await this.activeRequest;
+          } catch (error) {
+            // Ignore errors from the active request we're about to clear anyway
+          }
         }
+
+        // Small delay to allow queue processing
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
 
       // Clear any queued requests (atomically with clearing flag set)
@@ -1037,12 +1216,12 @@ class JapanDayTripApp {
       count: geojson.features.length,
       pages: metadata.pages || 1,
       geojson: geojson,
-      visible: true // Start as visible
+      visible: false // Not displayed by default (prevents clutter)
     };
 
-    // Store in history
+    // Store in history (but NOT in visibleSearchIds since layer is not displayed)
     this.searchHistory.set(searchId, searchRecord);
-    this.visibleSearchIds.add(searchId);
+    // Note: visibleSearchIds will be updated when show_search_results is called
 
     // Store POI details for quick lookup with LRU eviction
     geojson.features.forEach(feature => {
@@ -1066,30 +1245,12 @@ class JapanDayTripApp {
       }
     });
 
-    // AUTOMATICALLY display on map with icon layers
-    try {
-      // Clear old layers first if this is the first search
-      if (this.visibleSearchIds.size === 1) {
-        this.mapController.executeTool('clear_map_layers', {}).catch((error) => {
-          errorLogger.warn('Map Layers', 'Failed to clear map layers for first search', {
-            searchId,
-            error: error.message
-          });
-        });
-      }
-
-      // Add icon layer with layer name based on search ID
-      const layerName = `search-layer-${searchId}`;
-      await this.mapController.addIconLayer(geojson, layerName);
-
-      // Fit map bounds to show all newly added POIs
-      const bounds = this.mapController.calculateGeojsonBounds(geojson);
-      if (bounds) {
-        this.mapController.fitBounds(bounds);
-      }
-    } catch (error) {
-      errorLogger.log('POI Display', error, { searchId, featureCount: geojson.features.length });
-    }
+    // Store search results in memory but DON'T automatically display on map
+    // This prevents map clutter (100+ POI icons)
+    // Results will be shown only when:
+    // 1. Claude calls highlight_recommended_pois (shows 3-5 curated picks), OR
+    // 2. User explicitly asks to see all results (Claude calls show_search_results tool)
+    // Note: Layer can be added later via showSearchResults(searchId) method
 
     return searchId;
   }
@@ -1119,8 +1280,10 @@ class JapanDayTripApp {
   async showSearchResults(searchId) {
     const search = this.searchHistory.get(searchId);
     if (!search) {
+      console.error('[DEBUG showSearchResults] Search not found:', searchId);
       throw new Error(`Search ${searchId} not found in history`);
     }
+
 
     if (search.visible) {
       return;
@@ -1246,7 +1409,7 @@ class JapanDayTripApp {
       },
       {
         name: 'get_poi_summary',
-        description: 'Get a lightweight summary list of stored POIs (across all searches). Returns just id, name, category, genre, rating, price, time, coordinates. Defaults to top 100 POIs sorted by rating. Use filters (category, min_rating, search_text, open_after) to narrow results. If total_available > count in response, use filters instead of increasing limit to avoid token overflow.',
+        description: 'Get a lightweight summary list of stored POIs (across all searches). Returns: id, name, category, genre, rating, price, time, coordinates, source. The "source" field indicates "rurubu" (tourism POIs with full data) or "searchbox" (infrastructure with basic data). Defaults to top 100 POIs sorted by rating. Use filters (category, min_rating, search_text, open_after) to narrow results. If total_available > count in response, use filters instead of increasing limit to avoid token overflow.',
         input_schema: {
           type: 'object',
           properties: {
@@ -1345,9 +1508,9 @@ class JapanDayTripApp {
 
   /**
    * Parse time string and extract closing time
-   * Handles common Japanese time formats
+   * Handles common Japanese time formats and edge cases
    * @param {string} timeStr - Time string like "9:00-21:00" or "24時間営業"
-   * @returns {Object|null} {closes_at: "21:00", is_24h: boolean} or null if unparseable
+   * @returns {Object|null} {closes_at: "21:00", is_24h: boolean, irregular: boolean} or null if unparseable
    */
   parseTimeString(timeStr) {
     if (!timeStr || typeof timeStr !== 'string') return null;
@@ -1356,11 +1519,37 @@ class JapanDayTripApp {
 
     // Check for 24-hour places
     if (str.includes('24時間') || str.includes('24h') || str.includes('24H')) {
-      return { closes_at: '24:00', is_24h: true };
+      return { closes_at: '24:00', is_24h: true, irregular: false };
+    }
+
+    // Check for irregular/variable hours (common in Japanese)
+    const irregularPatterns = [
+      '不定休', '不規則', '不定期', 'irregular', 'varies',
+      '要確認', '応相談', 'check', '確認'
+    ];
+    for (const pattern of irregularPatterns) {
+      if (str.includes(pattern)) {
+        return { closes_at: null, is_24h: false, irregular: true };
+      }
+    }
+
+    // Check for closed/休み
+    if (str.includes('定休') || str.includes('休業') || str.includes('closed')) {
+      return { closes_at: null, is_24h: false, irregular: true };
     }
 
     // Try to extract closing time from common formats
     // Formats: "9:00-21:00", "9:00~21:00", "9時-21時", "11:00~14:00, 17:00~22:00"
+
+    // Handle overnight hours (e.g., "18:00-翌2:00", "18:00-next day 2:00")
+    const overnightMatch = str.match(/(\d{1,2}):(\d{2})\s*[-~～]\s*(?:翌|next day|翌日)\s*(\d{1,2}):(\d{2})/i);
+    if (overnightMatch && overnightMatch.length >= 5) {
+      const closeHour = parseInt(overnightMatch[3]);
+      const closeMin = overnightMatch[4];
+      // Convert to 24+ hour format (e.g., 2:00 next day = 26:00)
+      const adjustedHour = (closeHour + 24).toString().padStart(2, '0');
+      return { closes_at: `${adjustedHour}:${closeMin}`, is_24h: false, irregular: false };
+    }
 
     // Match HH:MM-HH:MM or HH:MM~HH:MM
     const match1 = str.match(/(\d{1,2}):(\d{2})\s*[-~～]\s*(\d{1,2}):(\d{2})/g);
@@ -1369,9 +1558,19 @@ class JapanDayTripApp {
       const lastRange = match1[match1.length - 1];
       const parts = lastRange.match(/(\d{1,2}):(\d{2})\s*[-~～]\s*(\d{1,2}):(\d{2})/);
       if (parts && parts.length >= 5 && parts[3] && parts[4]) {
-        const closeHour = parts[3].padStart(2, '0');
+        const openHour = parseInt(parts[1]);
+        const closeHour = parseInt(parts[3]);
         const closeMin = parts[4];
-        return { closes_at: `${closeHour}:${closeMin}`, is_24h: false };
+
+        // Detect overnight hours (close time < open time suggests next day)
+        // e.g., "22:00-2:00" likely means 22:00 to 2:00 next day
+        let adjustedCloseHour = closeHour;
+        if (closeHour < openHour && closeHour < 12) {
+          adjustedCloseHour = closeHour + 24; // Convert to 24+ format
+        }
+
+        const formattedHour = adjustedCloseHour.toString().padStart(2, '0');
+        return { closes_at: `${formattedHour}:${closeMin}`, is_24h: false, irregular: false };
       }
     }
 
@@ -1381,8 +1580,17 @@ class JapanDayTripApp {
       const lastRange = match2[match2.length - 1];
       const parts = lastRange.match(/(\d{1,2})時\s*[-~～]\s*(\d{1,2})時/);
       if (parts && parts.length >= 3 && parts[2]) {
-        const closeHour = parts[2].padStart(2, '0');
-        return { closes_at: `${closeHour}:00`, is_24h: false };
+        const openHour = parseInt(parts[1]);
+        const closeHour = parseInt(parts[2]);
+
+        // Handle overnight
+        let adjustedCloseHour = closeHour;
+        if (closeHour < openHour && closeHour < 12) {
+          adjustedCloseHour = closeHour + 24;
+        }
+
+        const formattedHour = adjustedCloseHour.toString().padStart(2, '0');
+        return { closes_at: `${formattedHour}:00`, is_24h: false, irregular: false };
       }
     }
 
@@ -1414,6 +1622,9 @@ class JapanDayTripApp {
 
     // 24-hour places are always open
     if (parsed.is_24h) return true;
+
+    // Irregular hours - include them (let Claude/user verify)
+    if (parsed.irregular || !parsed.closes_at) return true;
 
     // Compare closing time with target time
     // Convert to minutes for comparison
@@ -1451,9 +1662,9 @@ class JapanDayTripApp {
 
     const allPOIs = [];
 
-    // Collect POIs from all visible search layers
-    this.visibleSearchIds.forEach(searchId => {
-      const search = this.searchHistory.get(searchId);
+    // Collect POIs from ALL searches in history (not just visible ones)
+    // This allows get_poi_summary to work even when layers aren't displayed on map
+    this.searchHistory.forEach((search, searchId) => {
       if (!search || !search.geojson) return;
 
       // Filter by category if specified (category filter at search level)
@@ -1493,14 +1704,15 @@ class JapanDayTripApp {
 
         // Add lightweight summary with full-precision coordinates
         allPOIs.push({
-          id: props.id,
+          id: String(props.id), // Convert to string for consistency with get_poi_details
           name: props.name || 'Unknown',
           category: search.category,
           genre: props.sgenreName || null,
           rating: rating,
           price: props.price || null,
           time: props.time || null,
-          coordinates: feature.geometry?.coordinates || null
+          coordinates: feature.geometry?.coordinates || null,
+          source: search.source || 'rurubu' // Add source field (rurubu or searchbox)
         });
       });
     });
@@ -1543,6 +1755,7 @@ class JapanDayTripApp {
    * @returns {Object} Full POI details
    */
   getPOIDetails(ids = []) {
+
     if (!Array.isArray(ids) || ids.length === 0) {
       return {
         pois: [],
@@ -1554,21 +1767,30 @@ class JapanDayTripApp {
     const detailedPOIs = [];
     const idsSet = new Set(ids);
 
-    // Search through all visible search layers
-    this.visibleSearchIds.forEach(searchId => {
-      const search = this.searchHistory.get(searchId);
-      if (!search || !search.geojson) return;
+    // Search through ALL searches in history (not just visible ones)
+    // This allows get_poi_details to work even when layers aren't displayed on map
+    this.searchHistory.forEach((search, searchId) => {
+      if (!search || !search.geojson) {
+        return;
+      }
 
-      search.geojson.features.forEach(feature => {
+
+      search.geojson.features.forEach((feature, idx) => {
         const props = feature.properties;
 
+        // Log first 3 feature IDs for debugging
+        if (idx < 3) {
+        }
+
         // Check if this POI is in the requested IDs
-        if (idsSet.has(props.id)) {
+        // Convert to string for comparison (IDs come as strings from Claude, stored as numbers)
+        const idStr = String(props.id);
+        if (idsSet.has(idStr)) {
           const [lng, lat] = feature.geometry.coordinates;
 
           // Return FULL details
           detailedPOIs.push({
-            id: props.id,
+            id: idStr, // Use string version for consistency
             name: props.name || 'Unknown',
             kana: props.kana || null,
             address: props.address || null,
@@ -1587,11 +1809,12 @@ class JapanDayTripApp {
             sgenre: props.sgenre || null
           });
 
-          // Remove from set once found
-          idsSet.delete(props.id);
+          // Remove from set once found (use string version)
+          idsSet.delete(idStr);
         }
       });
     });
+
 
     return {
       pois: detailedPOIs,
@@ -1949,25 +2172,36 @@ Rating: [translated rating]`;
     const photoDiv = document.getElementById('poiPhoto');
     const photoImg = document.getElementById('poiPhotoImg');
     if (properties.photo) {
-      // Reset any previous error handlers
-      photoImg.onerror = null;
-      photoImg.onload = null;
+      // Validate photo URL before using
+      const isValidUrl = this.validatePhotoUrl(properties.photo);
 
-      // Set up error handler before setting src
-      photoImg.onerror = () => {
-        errorLogger.warn('POI Modal', 'Failed to load photo', {
+      if (isValidUrl) {
+        // Reset any previous error handlers
+        photoImg.onerror = null;
+        photoImg.onload = null;
+
+        // Set up error handler before setting src
+        photoImg.onerror = () => {
+          errorLogger.warn('POI Modal', 'Failed to load photo', {
+            poiName: properties.title || properties.name,
+            photoUrl: properties.photo
+          });
+          photoDiv.style.display = 'none';
+        };
+
+        // Show photo on successful load
+        photoImg.onload = () => {
+          photoDiv.style.display = 'block';
+        };
+
+        photoImg.src = properties.photo;
+      } else {
+        errorLogger.warn('POI Modal', 'Invalid photo URL blocked', {
           poiName: properties.title || properties.name,
           photoUrl: properties.photo
         });
         photoDiv.style.display = 'none';
-      };
-
-      // Show photo on successful load
-      photoImg.onload = () => {
-        photoDiv.style.display = 'block';
-      };
-
-      photoImg.src = properties.photo;
+      }
     } else {
       photoDiv.style.display = 'none';
     }
@@ -2139,55 +2373,29 @@ Rating: [translated rating]`;
    * Remove all event listeners to prevent memory leaks
    */
   removeEventListeners() {
-    // Remove DOM event listeners
-    const sendBtn = document.getElementById('sendBtn');
-    const chatInput = document.getElementById('chatInput');
-    const langToggle = document.getElementById('lang-toggle');
-    const clearChatBtn = document.getElementById('clearChatBtn');
-    const closePoiModal = document.getElementById('closePoiModal');
-    const poiModal = document.getElementById('poiModal');
-    const closeErrorModal = document.getElementById('closeErrorModal');
-    const errorModal = document.getElementById('errorModal');
-    const errorClearChatBtn = document.getElementById('errorClearChatBtn');
+    // Abort all event listeners registered with AbortController
+    // This automatically removes all listeners that were registered with { signal }
+    this.abortController.abort();
 
-    if (sendBtn && this.eventHandlers.sendBtn) {
-      sendBtn.removeEventListener('click', this.eventHandlers.sendBtn);
-    }
-    if (chatInput && this.eventHandlers.chatInputKeypress) {
-      chatInput.removeEventListener('keypress', this.eventHandlers.chatInputKeypress);
-    }
-    if (langToggle && this.eventHandlers.langToggle) {
-      langToggle.removeEventListener('click', this.eventHandlers.langToggle);
-    }
-    if (clearChatBtn && this.eventHandlers.clearChatBtn) {
-      clearChatBtn.removeEventListener('click', this.eventHandlers.clearChatBtn);
-    }
-    if (closePoiModal && this.eventHandlers.closePoiModal) {
-      closePoiModal.removeEventListener('click', this.eventHandlers.closePoiModal);
-    }
-    if (poiModal && this.eventHandlers.poiModalBackdrop) {
-      poiModal.removeEventListener('click', this.eventHandlers.poiModalBackdrop);
-    }
-    if (closeErrorModal && this.eventHandlers.closeErrorModal) {
-      closeErrorModal.removeEventListener('click', this.eventHandlers.closeErrorModal);
-    }
-    if (errorModal && this.eventHandlers.errorModalBackdrop) {
-      errorModal.removeEventListener('click', this.eventHandlers.errorModalBackdrop);
-    }
-    if (errorClearChatBtn && this.eventHandlers.errorClearChatBtn) {
-      errorClearChatBtn.removeEventListener('click', this.eventHandlers.errorClearChatBtn);
-    }
+    // Create a new AbortController for future event listeners
+    this.abortController = new AbortController();
 
-    // Remove map event listeners
+    // Remove map event listeners (not using AbortController)
     if (this.mapController && this.mapController.map && this.mapEventHandlers.moveend) {
       this.mapController.map.off('moveend', this.mapEventHandlers.moveend);
     }
 
-    // Clean up photo image event handlers
+    // Clean up photo image event handlers (set via property assignment)
     const photoImg = document.getElementById('poiPhotoImg');
     if (photoImg) {
       photoImg.onerror = null;
       photoImg.onload = null;
+    }
+
+    // Clean up dynamically added error modal button handlers
+    const errorClearChatBtn = document.getElementById('errorClearChatBtn');
+    if (errorClearChatBtn && this.eventHandlers.errorClearChatBtn) {
+      errorClearChatBtn.removeEventListener('click', this.eventHandlers.errorClearChatBtn);
     }
 
     // Clear handler references

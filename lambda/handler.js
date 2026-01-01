@@ -3,15 +3,146 @@
  * Supports both Claude and Gemini APIs
  * Handles CORS and forwards requests to appropriate AI provider
  * Supports streaming responses for better UX
+ *
+ * Security Features:
+ * - Origin validation (set ALLOWED_ORIGINS env var)
+ * - Referer header validation
+ * - CORS configuration via Lambda Function URL settings
+ *
+ * Recommended Environment Variables:
+ * - ALLOWED_ORIGINS: Comma-separated list of allowed origins (e.g., "https://example.com,https://www.example.com")
+ * - CLAUDE_API_KEY: Your Claude API key
+ * - GEMINI_API_KEY: Your Gemini API key (optional)
+ * - DEFAULT_AI_PROVIDER: 'claude' or 'gemini'
+ *
+ * Additional Security Recommendations:
+ * - Enable AWS WAF for DDoS protection
+ * - Configure Lambda throttling limits
+ * - Enable CloudWatch logging for monitoring
+ * - Use AWS Secrets Manager for API keys
+ * - Set up API Gateway with rate limiting if needed
  */
 
 import { pipeline } from 'stream/promises';
+
+// Simple in-memory rate limiter (resets on cold start)
+// For production: Use DynamoDB or ElastiCache for persistent rate limiting
+const rateLimitStore = new Map(); // Map<IP, { count, resetTime }>
+const RATE_LIMIT_WINDOW = 60000; // 1 minute window
+const RATE_LIMIT_MAX_REQUESTS = parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100'); // 100 requests per minute per IP
+
+/**
+ * Check if request exceeds rate limit
+ * @param {string} identifier - IP address or identifier
+ * @returns {Object} { allowed: boolean, remaining: number, resetTime: number }
+ */
+function checkRateLimit(identifier) {
+  const now = Date.now();
+  const record = rateLimitStore.get(identifier);
+
+  // No record or window expired - create new
+  if (!record || now >= record.resetTime) {
+    rateLimitStore.set(identifier, {
+      count: 1,
+      resetTime: now + RATE_LIMIT_WINDOW
+    });
+    return {
+      allowed: true,
+      remaining: RATE_LIMIT_MAX_REQUESTS - 1,
+      resetTime: now + RATE_LIMIT_WINDOW
+    };
+  }
+
+  // Within window - check count
+  if (record.count >= RATE_LIMIT_MAX_REQUESTS) {
+    return {
+      allowed: false,
+      remaining: 0,
+      resetTime: record.resetTime
+    };
+  }
+
+  // Increment count
+  record.count++;
+  rateLimitStore.set(identifier, record);
+
+  return {
+    allowed: true,
+    remaining: RATE_LIMIT_MAX_REQUESTS - record.count,
+    resetTime: record.resetTime
+  };
+}
 
 export const handler = async (event) => {
   // Note: CORS is handled by Lambda Function URL configuration
   // No need to add CORS headers here to avoid duplicates
 
   try {
+    // Rate Limiting: Check per-IP rate limit
+    const sourceIp = event.requestContext?.http?.sourceIp ||
+                     event.requestContext?.identity?.sourceIp ||
+                     'unknown';
+
+    const rateLimitResult = checkRateLimit(sourceIp);
+
+    if (!rateLimitResult.allowed) {
+      const retryAfter = Math.ceil((rateLimitResult.resetTime - Date.now()) / 1000);
+      console.warn('[Rate Limit] Request blocked from IP:', sourceIp);
+      return {
+        statusCode: 429,
+        headers: {
+          'Content-Type': 'application/json',
+          'Retry-After': retryAfter.toString(),
+          'X-RateLimit-Limit': RATE_LIMIT_MAX_REQUESTS.toString(),
+          'X-RateLimit-Remaining': '0',
+          'X-RateLimit-Reset': rateLimitResult.resetTime.toString()
+        },
+        body: JSON.stringify({
+          error: 'Too Many Requests',
+          message: `Rate limit exceeded. Retry after ${retryAfter} seconds.`,
+          retryAfter
+        })
+      };
+    }
+
+    // CSRF Protection: Validate Origin header
+    const origin = event.headers.origin || event.headers.Origin;
+    const allowedOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim());
+
+    // If ALLOWED_ORIGINS is configured, enforce it
+    if (allowedOrigins.length > 0 && allowedOrigins[0] !== '') {
+      if (!origin || !allowedOrigins.includes(origin)) {
+        console.warn('[Security] Request blocked - invalid origin:', origin);
+        return {
+          statusCode: 403,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ error: 'Forbidden: Invalid origin' })
+        };
+      }
+    }
+
+    // Validate Referer header as additional CSRF protection
+    const referer = event.headers.referer || event.headers.Referer;
+    if (referer) {
+      try {
+        const refererUrl = new URL(referer);
+        // If origin is set, referer should match
+        if (origin) {
+          const originUrl = new URL(origin);
+          if (refererUrl.hostname !== originUrl.hostname) {
+            console.warn('[Security] Request blocked - referer/origin mismatch');
+            return {
+              statusCode: 403,
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ error: 'Forbidden: Invalid referer' })
+            };
+          }
+        }
+      } catch (error) {
+        console.warn('[Security] Invalid referer URL:', referer);
+      }
+    }
+
     // Parse request body
     const requestBody = JSON.parse(event.body);
 
