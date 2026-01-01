@@ -169,7 +169,7 @@ class JapanDayTripApp {
                     jis_code: resultData.jis_code,
                     pages: resultData.pages
                   };
-                  this.storeRurubuData(resultData.geojson, metadata);
+                  this.storeSearchData(resultData.geojson, metadata);
                 }
               } catch (e) {
                 // Failed to parse data
@@ -1173,7 +1173,7 @@ class JapanDayTripApp {
    * @param {object} metadata - Search metadata (category, location, etc.)
    * @returns {string} searchId - ID of the stored search
    */
-  async storeRurubuData(geojson, metadata = {}) {
+  async storeSearchData(geojson, metadata = {}) {
     // Cap search history to prevent memory issues
     const MAX_SEARCHES = this.config.MAX_SEARCH_HISTORY || 10;
     if (this.searchHistory.size >= MAX_SEARCHES) {
