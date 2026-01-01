@@ -9,9 +9,9 @@
 
 import { CONFIG, validateConfig } from './config.js';
 import { RurubuMCPClient } from './demos/japan-tourism/modules/rurubu-mcp-client.js';
-import { ClaudeClient, GeminiClient } from './framework/src/ai/index.js';
-import { MapController, reverseGeocode } from './framework/src/map/index.js';
-import { I18n, ThinkingSimulator, errorLogger, safeGet, safeGetElement, safeCoordinates, safeArray } from './framework/src/core/index.js';
+import { ClaudeClient, GeminiClient } from '@mapdemos/ai-framework/ai';
+import { MapController, reverseGeocode } from '@mapdemos/ai-framework/map';
+import { I18n, ThinkingSimulator, errorLogger, safeGet, safeGetElement, safeCoordinates, safeArray } from '@mapdemos/ai-framework/core';
 import { JAPAN_TRANSLATIONS } from './demos/japan-tourism/translations/japan-i18n.js';
 import { JapanThinkingMessages } from './demos/japan-tourism/modules/japan-thinking-messages.js';
 
