@@ -434,7 +434,7 @@ export class MapController {
         },
         {
           name: 'highlight_recommended_pois',
-          description: 'Add star markers to highlight recommended POIs on the map. ALWAYS call this BEFORE writing your response. POIs are auto-numbered (1,2,3...) in order provided. CRITICAL: Use exact data from get_poi_summary - include "id" field (mandatory for Rurubu POIs, ensures 99% match rate), exact "name" (no translation/shortening), and full-precision "coordinates". ID matching has 99% success rate vs 50% for name-only matching.',
+          description: 'Add star markers to highlight recommended POIs on the map. ALWAYS call this BEFORE writing your response. For primary recommendations, POIs are numbered (1,2,3...) in order provided. For alternatives (when user asks "other options?"), set are_alternatives=true to show "-" instead of numbers. CRITICAL: Use exact data from get_poi_summary - include "id" field (mandatory for Rurubu POIs, ensures 99% match rate), exact "name" (no translation/shortening), and full-precision "coordinates". ID matching has 99% success rate vs 50% for name-only matching.',
           input_schema: {
             type: 'object',
             properties: {
@@ -464,6 +464,11 @@ export class MapController {
                   },
                   required: ['name', 'coordinates']
                 }
+              },
+              are_alternatives: {
+                type: 'boolean',
+                description: 'Set to true when showing alternatives (user asked "other options?"). This displays "-" instead of numbers. Default: false (show numbers 1,2,3...)',
+                default: false
               }
             },
             required: ['pois']
@@ -712,7 +717,24 @@ export class MapController {
         return await this.executeAddPointsAsMarkers(args);
       }
 
-      const result = await this.mapTools.executeTool(toolName, args);
+      let result;
+      try {
+        result = await this.mapTools.executeTool(toolName, args);
+      } catch (error) {
+        // Handle Mapbox GL JS errors (e.g., source removal while layer is using it)
+        if (error.message && error.message.includes('cannot be removed while layer')) {
+          console.warn('[WARN] Mapbox layer/source cleanup error (non-critical):', error.message);
+          // Return success - the map layers are being cleared anyway
+          return {
+            content: [{
+              type: 'text',
+              text: `Tool ${toolName} completed with cleanup warnings (map state reset).`
+            }]
+          };
+        }
+        // Re-throw other errors
+        throw error;
+      }
 
       // Validate that result has non-empty content (Claude API requirement)
       if (!result || !result.content || result.content.length === 0) {
@@ -1241,7 +1263,7 @@ export class MapController {
    * Accepts POI objects with name and coordinates
    */
   async executeHighlightRecommendedPOIs(args) {
-    const { pois } = args;
+    const { pois, are_alternatives = false } = args;
 
     if (!pois || !Array.isArray(pois) || pois.length === 0) {
       return {
@@ -1260,81 +1282,31 @@ export class MapController {
       // Clear existing star markers
       this.clearStarMarkers();
 
+      // Clear all waypoint numbers from base markers to prevent number confusion
+      // When starring recommendations, we want fresh 1,2,3... numbers, not old itinerary waypoints
+      this.clearAllWaypointNumbers();
+
       // Track which base markers to hide
       if (!this.hiddenBaseMarkers) {
         this.hiddenBaseMarkers = [];
       }
 
+      // Track POIs that couldn't be found (for error reporting)
+      const notFoundPOIs = [];
+
       // Add star marker for each POI
       pois.forEach((poi, index) => {
-        const { id, name, coordinates } = poi;
-        const [lng, lat] = coordinates;
-        const recommendationNumber = index + 1; // 1-based numbering
+        try {
+          const { id, name, coordinates } = poi;
+          const [lng, lat] = coordinates;
+          const recommendationNumber = index + 1; // 1-based numbering
 
-        console.log(`[DEBUG highlight] POI ${index + 1}:`, { id, name: name?.substring(0, 30), coordinates });
+        // PRIORITY: Look up POI data from app.poiDataStore first (most reliable)
+        // This allows starring to work even when base markers aren't on the map
+        let poiData = null;
 
-        // Find and hide the matching base POI marker, transfer waypoint number and props if present
-        let waypointNumber = null;
-        let baseProps = null;
-
-        if (this.layerMarkers) {
-          // Use labeled loops to break out of nested forEach
-          outerLoop: for (const markers of this.layerMarkers.values()) {
-            for (const markerObj of markers) {
-              let isMatch = false;
-
-              // Skip SearchBox POIs - they should not be starred (infrastructure, not recommendations)
-              if (markerObj.props?.source === 'searchbox') {
-                continue;
-              }
-
-              // Priority 1: Match by ID (most reliable for Rurubu POIs)
-              if (id && markerObj.props?.id && String(markerObj.props.id) === String(id)) {
-                isMatch = true;
-              }
-              // Priority 2: Match by exact name (fallback)
-              else if (name && markerObj.name && markerObj.name === name) {
-                isMatch = true;
-              }
-              // Priority 3: Match by coordinates (last resort)
-              else if (coordinates) {
-                const [markerLng, markerLat] = markerObj.coordinates;
-                const distance = Math.sqrt(
-                  Math.pow(markerLng - lng, 2) +
-                  Math.pow(markerLat - lat, 2)
-                );
-                if (distance < 0.0001) {
-                  isMatch = true;
-                }
-              }
-
-              // If this is the matching base marker, hide it
-              if (isMatch) {
-                // Check if this marker has a waypoint number
-                const numberEl = markerObj.markerEl?.querySelector('.poi-waypoint-number');
-                if (numberEl) {
-                  waypointNumber = numberEl.textContent;
-                  // Remove it from the base marker (we'll add it to the star marker)
-                  numberEl.remove();
-                }
-
-                // Store the props data from the base marker
-                baseProps = markerObj.props;
-
-                markerObj.marker.getElement().style.display = 'none';
-                this.hiddenBaseMarkers.push(markerObj);
-
-                break outerLoop; // Stop after first match
-              }
-            }
-          }
-        }
-
-        // Use props from base marker if available, otherwise look up from store
-        // Try ID-based lookup first (more reliable), then fall back to name
-        let poiData = baseProps;
-        if (!poiData && this.app?.poiDataStore) {
-          // Try to find by ID first
+        if (this.app?.poiDataStore) {
+          // Try to find by ID first (most reliable)
           if (id) {
             for (const [storeName, storeData] of this.app.poiDataStore.entries()) {
               if (String(storeData.id) === String(id)) {
@@ -1344,23 +1316,65 @@ export class MapController {
             }
           }
           // Fall back to name lookup if ID didn't match
-          if (!poiData) {
+          if (!poiData && name) {
             poiData = this.app.poiDataStore.get(name);
           }
         }
-        // Default to empty object if still not found
-        poiData = poiData || {};
 
-        console.log('[DEBUG highlight] Data lookup:', {
-          id,
-          name: name?.substring(0, 30),
-          hasBaseProps: !!baseProps,
-          foundById: !!(id && poiData.id),
-          foundByName: !!this.app?.poiDataStore?.get(name),
-          poiDataKeys: Object.keys(poiData),
-          actualName: poiData.name?.substring(0, 30),
-          actualId: poiData.id
-        });
+        // CRITICAL: If POI not found in store, skip it (don't create marker with empty data)
+        if (!poiData) {
+          console.error('[ERROR] POI not found in poiDataStore - skipping:', { id, name, coordinates });
+          notFoundPOIs.push({ index: index + 1, name, id });
+          return; // Skip this POI
+        }
+
+        // SECONDARY: If found in store, try to find and hide matching base marker
+        // (This is optional - starring works without base markers)
+        if (poiData && this.layerMarkers) {
+          outerLoop: for (const markers of this.layerMarkers.values()) {
+            for (const markerObj of markers) {
+              let isMatch = false;
+
+              // Skip SearchBox POIs
+              if (markerObj.props?.source === 'searchbox') {
+                continue;
+              }
+
+              // Try to match this base marker with our POI
+              // Priority 1: Match by ID
+              if (poiData.id && markerObj.props?.id && String(markerObj.props.id) === String(poiData.id)) {
+                isMatch = true;
+              }
+              // Priority 2: Match by name
+              else if (poiData.name && markerObj.name && markerObj.name === poiData.name) {
+                isMatch = true;
+              }
+              // Priority 3: Match by coordinates (within 1 meter to avoid false matches)
+              else if (coordinates) {
+                const [markerLng, markerLat] = markerObj.coordinates;
+                const distance = Math.sqrt(
+                  Math.pow(markerLng - lng, 2) +
+                  Math.pow(markerLat - lat, 2)
+                );
+                // Tighter threshold (0.00001 ≈ 1 meter) to avoid matching nearby different POIs
+                if (distance < 0.00001) {
+                  isMatch = true;
+                }
+              }
+
+              // If found matching base marker, hide it
+              if (isMatch) {
+                // Note: We deliberately do NOT transfer waypoint numbers here
+                // Star markers for recommendations should always show 1,2,3... based on order
+                // Old waypoint numbers from itineraries should not be reused
+
+                markerObj.marker.getElement().style.display = 'none';
+                this.hiddenBaseMarkers.push(markerObj);
+                break outerLoop;
+              }
+            }
+          }
+        }
 
         // Get emoji icon and color based on data source
         // Priority: SearchBox (maki/poi_category) > Rurubu (sgenre/category) > default
@@ -1401,12 +1415,18 @@ export class MapController {
 
         // Position to center the pill on the POI location
         markerEl.style.position = 'absolute';
-        // Adjust left position - always has a number now (either waypoint or recommendation)
-        markerEl.style.left = '-55px'; // Wider for number
         markerEl.style.top = '-16px';
 
-        // Add number: waypoint number takes priority, otherwise use recommendation number
-        const displayNumber = waypointNumber || recommendationNumber.toString();
+        // Determine what to display: "-" for alternatives, otherwise recommendation numbers
+        let displayNumber;
+        if (are_alternatives) {
+          displayNumber = '-'; // Show dash for alternatives (not ranked)
+        } else {
+          // Always use recommendation number (1, 2, 3...) for starred POIs
+          displayNumber = recommendationNumber.toString();
+        }
+        markerEl.style.left = '-55px'; // Wider for number/dash
+
         const numberEl = document.createElement('div');
         numberEl.className = 'poi-waypoint-number';
         numberEl.textContent = displayNumber;
@@ -1463,6 +1483,10 @@ export class MapController {
         marker._poiData = poiData;
 
         this.starMarkers.push(marker);
+        } catch (error) {
+          console.error(`[ERROR] Failed to create star marker ${index + 1}:`, error);
+          console.error('[ERROR] POI data:', poi);
+        }
       });
 
       // Fit map bounds to show all recommended POIs
@@ -1480,16 +1504,30 @@ export class MapController {
         });
       }
 
+      // Report results
+      const successCount = this.starMarkers.length;
+      const result = {
+        success: successCount > 0,
+        message: successCount > 0
+          ? `Added ${successCount} star markers to highlight recommended places on the map`
+          : 'No POIs were found in the database',
+        highlighted_count: successCount,
+        highlighted_pois: pois.map(p => p.name)
+      };
+
+      // If some POIs weren't found, add warning
+      if (notFoundPOIs.length > 0) {
+        result.warning = `${notFoundPOIs.length} POI(s) not found in database and were skipped`;
+        result.not_found_pois = notFoundPOIs.map(p => `#${p.index}: ${p.name} (id: ${p.id || 'none'})`);
+        result.message += `. WARNING: ${notFoundPOIs.length} POI(s) not in database - use ONLY POIs from search_rurubu_pois results!`;
+      }
+
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify({
-            success: true,
-            message: `Added ${pois.length} star markers to highlight recommended places on the map`,
-            highlighted_count: pois.length,
-            highlighted_pois: pois.map(p => p.name)
-          }, null, 2)
-        }]
+          text: JSON.stringify(result, null, 2)
+        }],
+        isError: notFoundPOIs.length > 0 && successCount === 0 // Error only if ALL POIs failed
       };
     } catch (error) {
       return {
@@ -1677,6 +1715,37 @@ export class MapController {
         }
       });
       this.hiddenBaseMarkers = [];
+    }
+  }
+
+  /**
+   * Clear all waypoint numbers from base markers
+   * Called before highlighting recommended POIs to ensure fresh numbering (1,2,3...)
+   * This prevents old itinerary waypoint numbers from interfering with recommendation numbers
+   */
+  clearAllWaypointNumbers() {
+    if (!this.layerMarkers) return;
+
+    // Iterate through all base markers and remove any waypoint numbers
+    for (const markers of this.layerMarkers.values()) {
+      for (const markerObj of markers) {
+        const markerEl = markerObj.markerEl || markerObj.marker.getElement();
+        if (markerEl) {
+          const numberEl = markerEl.querySelector('.poi-waypoint-number');
+          if (numberEl) {
+            numberEl.remove();
+            // Restore original marker width (remove number spacing)
+            if (markerEl.style.left === '-55px') {
+              markerEl.style.left = '-20px'; // Standard width without number
+            }
+          }
+        }
+      }
+    }
+
+    // Also clear the tracking map
+    if (this.waypointNumbers) {
+      this.waypointNumbers.clear();
     }
   }
 
@@ -1994,10 +2063,8 @@ export class MapController {
           };
           searchId = await this.app.storeRurubuData(geojson, metadata);
 
-          // Auto-display search_location results (infrastructure searches)
-          if (searchId && this.app.showSearchResults) {
-            await this.app.showSearchResults(searchId);
-          }
+          // DO NOT auto-display - let Claude review and decide
+          // Claude will call get_poi_summary to review, then show_search_results or highlight_recommended_pois
         } else {
           // Fallback: display using executeAddPointsAsMarkers if app is not available
           const points = result.results.map(poi => ({
@@ -2014,7 +2081,7 @@ export class MapController {
           await this.executeAddPointsAsMarkers({ points });
         }
 
-        // Return summary with search_id
+        // Return summary with search_id (results NOT auto-displayed)
         return {
           content: [{
             type: 'text',
@@ -2024,7 +2091,7 @@ export class MapController {
               query: query,
               count: result.results.length,
               results: result.results,
-              message: `Found ${result.results.length} locations and displayed them on the map.`
+              message: `Found ${result.results.length} locations. Use get_poi_summary() to review them, then call show_search_results("${searchId}") to display on map.`
             }, null, 2)
           }]
         };

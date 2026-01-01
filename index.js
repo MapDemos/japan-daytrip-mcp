@@ -1097,7 +1097,6 @@ class JapanDayTripApp {
   async clearConversation() {
     // Prevent multiple simultaneous clear operations
     if (this.isClearing) {
-      console.log('[Debug] Clear already in progress, ignoring duplicate request');
       return;
     }
 
@@ -1108,11 +1107,6 @@ class JapanDayTripApp {
       // Wait for request queue to drain
       // This ensures we don't clear while requests are being processed
       while (this.requestQueue.length > 0 || this.activeRequest) {
-        console.log('[Debug] Waiting for queue to drain:', {
-          queueLength: this.requestQueue.length,
-          hasActiveRequest: !!this.activeRequest
-        });
-
         if (this.activeRequest) {
           try {
             await this.activeRequest;
