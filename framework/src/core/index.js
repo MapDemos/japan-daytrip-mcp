@@ -9,8 +9,7 @@ export {
   safeGetElement,
   safeCoordinates,
   safeArray,
-  safeNumber,
-  safeString
+  safeNumber
 } from './utils.js';
 export { ThinkingSimulator, DefaultMessageProvider } from './thinking-simulator.js';
 export { I18n } from './i18n.js';

@@ -24,7 +24,6 @@ export {
   safeCoordinates,
   safeArray,
   safeNumber,
-  safeString,
   ThinkingSimulator,
   DefaultMessageProvider,
   I18n
