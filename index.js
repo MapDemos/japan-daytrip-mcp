@@ -14,6 +14,7 @@ import { MapController, reverseGeocode } from '@mapdemos/ai-framework/map';
 import { I18n, ThinkingSimulator, errorLogger, safeGet, safeGetElement, safeCoordinates, safeArray } from '@mapdemos/ai-framework/core';
 import { JAPAN_TRANSLATIONS } from './demos/japan-tourism/translations/japan-i18n.js';
 import { JapanThinkingMessages } from './demos/japan-tourism/modules/japan-thinking-messages.js';
+import { buildJapanTravelPrompt } from './demos/japan-tourism/prompts/japan-system-prompt.js';
 
 /**
  * Async error handling wrapper
@@ -147,15 +148,35 @@ class JapanDayTripApp {
           this.config
         );
       } else {
-        this.claudeClient = new ClaudeClient(
-          this.config.CLAUDE_API_KEY,
-          this.rurubuMCP,
-          this.mapController,
-          this.i18n,
-          this.config,
-          this, // App reference for search history management
-          (geojson, metadata) => this.storeRurubuData(geojson, metadata) // Callback to store full POI data
-        );
+        // New API: Use options object with generic data sources
+        this.claudeClient = new ClaudeClient({
+          apiKey: this.config.CLAUDE_API_KEY,
+          dataSources: [this.rurubuMCP], // Array of data sources
+          mapController: this.mapController,
+          i18n: this.i18n,
+          config: this.config,
+          app: this, // App reference for search history management
+          systemPromptBuilder: buildJapanTravelPrompt, // Inject Japan-specific prompt
+          onDataCallback: (dataSource, toolName, result, args) => {
+            // Generic callback - handle Rurubu POI data
+            if (toolName === 'search_rurubu_pois' && result.content) {
+              try {
+                const resultData = JSON.parse(result.content[0].text);
+                if (resultData.geojson) {
+                  const metadata = {
+                    category: resultData.category,
+                    location: resultData.location,
+                    jis_code: resultData.jis_code,
+                    pages: resultData.pages
+                  };
+                  this.storeRurubuData(resultData.geojson, metadata);
+                }
+              } catch (e) {
+                // Failed to parse data
+              }
+            }
+          }
+        });
       }
 
       // Setup event listeners
