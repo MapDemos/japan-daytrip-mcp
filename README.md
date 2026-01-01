@@ -107,31 +107,58 @@ See [Mapbox Demo Template Guide](https://github.com/MapDemos/mapbox-demo-templat
 
 ## 🏗️ Architecture
 
+### Framework + Demo Structure
+
+This project has been refactored into a **reusable framework** that can be forked for other domains (real estate, ride hailing, etc.):
+
+```
+japan-daytrip-mcp/
+├── framework/                      # 🎁 Reusable Framework (domain-agnostic)
+│   ├── src/
+│   │   ├── core/                   # Utilities, i18n, thinking simulator
+│   │   ├── data/                   # DataSourceBase (abstract MCP client)
+│   │   ├── ai/                     # Claude & Gemini clients
+│   │   ├── map/                    # Map controller, Mapbox utilities
+│   │   └── lambda/                 # AI proxy handler
+│   └── README.md                   # Framework documentation
+│
+└── demos/japan-tourism/            # 🗾 Japan Tourism Demo (domain-specific)
+    ├── modules/
+    │   ├── rurubu-mcp-client.js    # Extends DataSourceBase
+    │   └── japan-thinking-messages.js  # Custom thinking messages
+    ├── translations/
+    │   └── japan-i18n.js           # EN/JA translations
+    └── data/
+        └── jis.json                # JIS municipality codes
+```
+
 ### Triple MCP System
 
 ```
 User Query
     ↓
-Claude Orchestrator
+Claude Orchestrator (framework/src/ai/)
     ├─→ Mapbox MCP (hosted)
     │   └─→ Geocoding, routing, global POI search
     │
-    ├─→ Rurubu MCP (client-side)
+    ├─→ Rurubu MCP (demos/japan-tourism/)
     │   └─→ Japan tourism POIs with photos
     │
-    └─→ Map Tools (CDN)
+    └─→ Map Tools (framework/src/map/)
         └─→ Visualization: markers, routes, bounds
 ```
 
 ### Component Overview
 
-| Component | Purpose | Implementation |
-|-----------|---------|----------------|
-| **Mapbox MCP Client** | Connect to Mapbox hosted MCP server | JSON-RPC 2.0, Bearer auth |
-| **Rurubu MCP Client** | Virtual MCP for Rurubu API | Client-side tool execution |
-| **Claude Client** | Orchestrate all three MCP sources | Direct API calls, tool routing |
-| **Map Controller** | Manage Mapbox GL JS + Map Tools | Wrapper with convenience methods |
-| **I18n Module** | Bilingual support | Translation dictionary |
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| **DataSourceBase** | `framework/src/data/` | Abstract base for domain MCP clients |
+| **Claude Client** | `framework/src/ai/` | Orchestrate MCP sources |
+| **Map Controller** | `framework/src/map/` | Manage Mapbox GL JS |
+| **I18n Engine** | `framework/src/core/` | Translation system |
+| **Thinking Simulator** | `framework/src/core/` | Thinking message engine |
+| **Rurubu MCP** | `demos/japan-tourism/modules/` | Japan tourism data source |
+| **Japan Translations** | `demos/japan-tourism/translations/` | EN/JA UI strings |
 
 ---
 
@@ -142,19 +169,28 @@ japan-daytrip-mcp/
 ├── index.html              # Main HTML entry point
 ├── index.js                # Application orchestrator
 ├── config.js               # Configuration & API keys
-│
-├── modules/
-│   ├── mapbox-mcp-client.js    # Mapbox hosted MCP
-│   ├── rurubu-mcp-client.js    # Rurubu virtual MCP
-│   ├── claude-client.js        # Claude API integration
-│   ├── map-controller.js       # Map & visualization
-│   └── i18n.js                 # Bilingual support
-│
 ├── styles/
 │   └── main.css            # Application styles
 │
-├── data/
-│   └── jis.json            # JIS municipality codes (1900+ entries)
+├── framework/              # 🎁 Reusable Framework
+│   ├── src/
+│   │   ├── core/           # error-logger, utils, i18n, thinking-simulator
+│   │   ├── data/           # data-source-base (abstract MCP client)
+│   │   ├── ai/             # claude-client, gemini-client
+│   │   ├── map/            # map-controller, mapbox-service-utils
+│   │   ├── lambda/         # AI proxy handler
+│   │   └── index.js        # Main framework exports
+│   ├── package.json        # Framework package config
+│   └── README.md           # Framework documentation
+│
+├── demos/japan-tourism/    # 🗾 Japan Tourism Demo
+│   ├── modules/
+│   │   ├── rurubu-mcp-client.js       # Domain MCP (extends DataSourceBase)
+│   │   └── japan-thinking-messages.js # Custom thinking messages
+│   ├── translations/
+│   │   └── japan-i18n.js   # EN/JA translations
+│   └── data/
+│       └── jis.json        # JIS municipality codes (1900+ entries)
 │
 ├── package.json            # Dependencies
 ├── vite.config.js          # Build configuration
@@ -206,11 +242,104 @@ npm run build # Production build
 npm run serve # Preview production build
 ```
 
-### Adding New Features
+### Creating a New Demo
+
+The framework makes it easy to create new domain-specific demos. Here's how:
+
+**1. Create your demo structure:**
+
+```bash
+mkdir -p demos/your-domain/{modules,translations,data}
+```
+
+**2. Create a domain-specific MCP client:**
+
+```javascript
+// demos/your-domain/modules/your-mcp-client.js
+import { DataSourceBase } from '../../../framework/src/data/index.js';
+
+export class YourMCPClient extends DataSourceBase {
+  async initialize() {
+    // Load your domain data (CSV, JSON, API)
+    this.data = await this.loadData();
+  }
+
+  listTools() {
+    return [
+      {
+        name: 'search_your_data',
+        description: 'Search your domain-specific data',
+        input_schema: { /* ... */ }
+      }
+    ];
+  }
+
+  async executeTool(toolName, args) {
+    switch(toolName) {
+      case 'search_your_data':
+        return await this.searchData(args);
+      default:
+        return this.createErrorResult(`Unknown tool: ${toolName}`);
+    }
+  }
+}
+```
+
+**3. Create custom thinking messages (optional):**
+
+```javascript
+// demos/your-domain/modules/your-thinking-messages.js
+export class YourThinkingMessages {
+  extractLocation(question) {
+    // Extract location from user question
+    // Return location name or null
+  }
+
+  generateMessages({ question, location, category, action, isJapanese }) {
+    // Return array of contextual thinking messages
+    return [
+      '🔍 searching your domain...',
+      '📊 analyzing results...',
+      // ...
+    ];
+  }
+}
+```
+
+**4. Create translations:**
+
+```javascript
+// demos/your-domain/translations/your-i18n.js
+export const YOUR_TRANSLATIONS = {
+  en: {
+    title: 'Your Domain Assistant',
+    subtitle: 'Discover your domain data',
+    // ... all UI strings
+  },
+  // Add more languages as needed
+};
+```
+
+**5. Update index.js to use your demo:**
+
+```javascript
+import { YourMCPClient } from './demos/your-domain/modules/your-mcp-client.js';
+import { YOUR_TRANSLATIONS } from './demos/your-domain/translations/your-i18n.js';
+import { YourThinkingMessages } from './demos/your-domain/modules/your-thinking-messages.js';
+
+// Initialize with your demo
+this.i18n = new I18n(CONFIG.DEFAULT_LANGUAGE, YOUR_TRANSLATIONS);
+this.thinkingSimulator = new ThinkingSimulator(this.i18n, new YourThinkingMessages());
+this.yourMCP = new YourMCPClient(this.config, this);
+```
+
+See `framework/README.md` for complete framework documentation and examples.
+
+### Adding New Features to Japan Demo
 
 **Example: Add a new Rurubu tool**
 
-1. Edit `modules/rurubu-mcp-client.js`:
+1. Edit `demos/japan-tourism/modules/rurubu-mcp-client.js`:
 ```javascript
 listTools() {
   return [
@@ -218,7 +347,7 @@ listTools() {
     {
       name: 'get_poi_photos',
       description: 'Get photo gallery for a POI',
-      inputSchema: { /* ... */ }
+      input_schema: { /* ... */ }
     }
   ];
 }
