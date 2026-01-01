@@ -8,13 +8,13 @@
  */
 
 import { CONFIG, validateConfig } from './config.js';
-import { RurubuMCPClient } from './demos/japan-tourism/modules/rurubu-mcp-client.js';
+import { RurubuMCPClient } from './modules/rurubu-mcp-client.js';
 import { ClaudeClient, GeminiClient } from '@mapdemos/ai-framework/ai';
 import { MapController, reverseGeocode } from '@mapdemos/ai-framework/map';
 import { I18n, ThinkingSimulator, errorLogger, safeGet, safeGetElement, safeCoordinates, safeArray } from '@mapdemos/ai-framework/core';
-import { JAPAN_TRANSLATIONS } from './demos/japan-tourism/translations/japan-i18n.js';
-import { JapanThinkingMessages } from './demos/japan-tourism/modules/japan-thinking-messages.js';
-import { buildJapanTravelPrompt } from './demos/japan-tourism/prompts/japan-system-prompt.js';
+import { JAPAN_TRANSLATIONS } from './translations/japan-i18n.js';
+import { JapanThinkingMessages } from './modules/japan-thinking-messages.js';
+import { buildJapanTravelPrompt } from './prompts/japan-system-prompt.js';
 
 /**
  * Async error handling wrapper
