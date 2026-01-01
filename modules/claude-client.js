@@ -312,6 +312,9 @@ TOOL USAGE:
 - search_location(query): ONLY for hospitals, stations, hotels, convenience stores, banks, parking
   * Translate to Japanese: "hospitals in Yokohama" → search_location("横浜 病院")
   * Returns basic data: name, coordinates, category (NO prices, NO hours, NO ratings)
+  * ⚠️ Results stored but NOT auto-displayed - YOU must review and decide to show them
+  * Workflow: search_location → get_poi_summary(source="searchbox") → review → show_search_results(search_id)
+  * SearchBox POIs have source="searchbox" in summary (vs source="rurubu" for tourism)
   * ⚠️ NEVER use for restaurants/cafes/temples/tourism - they lack price/hour data
   * Only use if: 1) Infrastructure keywords detected, OR 2) search_rurubu_pois returns 0 results
 
@@ -1343,27 +1346,43 @@ WORKFLOW SUMMARY:
 
   /**
    * Estimate token count for text (extremely conservative approximation)
-   * Uses 1.5 chars per token to account for:
+   * Uses multiple heuristics to account for:
    * - JSON structure overhead (brackets, quotes, commas)
    * - Tool definitions and complex nested data
    * - Japanese/multi-byte characters
    * - Encoding overhead
    *
    * Note: Previous formula (chars/3) underestimated by 21.5x, causing 208k token overflow.
-   * This conservative formula prevents exceeding the 200k limit.
+   * This improved formula uses 1 char per token base + adjustments for better accuracy.
    */
   estimateTokens(text) {
     if (!text) return 0;
 
-    // Extremely conservative: 1.5 chars per token (was 3, which severely underestimated)
-    // Testing showed chars/3 resulted in 21.5x underestimation (9.7k estimate vs 208k actual)
-    let tokens = Math.ceil(text.length / 1.5);
+    // Ultra-conservative base: 1 char per token (safer than 1.5 chars/token)
+    // This accounts for worst-case scenarios with heavy JSON and multi-byte chars
+    let tokens = text.length;
 
-    // Add significant overhead for JSON structures (check for brackets/braces)
+    // Adjust for JSON structure complexity
     if (text.includes('{') || text.includes('[')) {
-      // JSON has significant token overhead from structure, especially with tool definitions
-      tokens = Math.ceil(tokens * 1.5); // 50% overhead for JSON
+      // Count JSON structural elements for better estimation
+      const jsonChars = (text.match(/[{}\[\],:"]/g) || []).length;
+      // Each structural character tends to be a separate token
+      tokens += jsonChars * 0.5; // Add 50% of structural chars
     }
+
+    // Adjust for multi-byte characters (Japanese, etc.)
+    const multiByte = text.match(/[\u3000-\u9FFF\uF900-\uFAFF]/g);
+    if (multiByte) {
+      // Japanese characters often tokenize to 2-3 tokens each
+      tokens += multiByte.length * 1.5;
+    }
+
+    // Adjust for whitespace (typically separate tokens)
+    const whitespace = (text.match(/\s+/g) || []).length;
+    tokens += whitespace * 0.3;
+
+    // Apply safety buffer of 20% for unpredictable overhead
+    tokens = Math.ceil(tokens * 1.2);
 
     return tokens;
   }

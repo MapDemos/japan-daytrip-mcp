@@ -324,6 +324,46 @@ class JapanDayTripApp {
   }
 
   /**
+   * Validate photo URL to prevent security issues
+   * Only allows trusted domains and HTTPS protocol
+   * @param {string} url - The URL to validate
+   * @returns {boolean} - True if URL is valid and safe
+   */
+  validatePhotoUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+
+    try {
+      const parsedUrl = new URL(url);
+
+      // Only allow HTTPS protocol (no http, data:, javascript:, etc.)
+      if (parsedUrl.protocol !== 'https:') {
+        return false;
+      }
+
+      // Whitelist of trusted domains for photo URLs
+      const trustedDomains = [
+        'www.j-jti.com',           // Rurubu API
+        'api.mapbox.com',           // Mapbox
+        'images.unsplash.com',      // Unsplash (if used)
+        'cdn.jsdelivr.net',         // CDN for libraries
+        'static-assets.mapbox.com'  // Mapbox static assets
+      ];
+
+      // Check if hostname matches any trusted domain
+      const isValidDomain = trustedDomains.some(domain =>
+        parsedUrl.hostname === domain ||
+        parsedUrl.hostname.endsWith('.' + domain)
+      );
+
+      return isValidDomain;
+    } catch (error) {
+      // Invalid URL format
+      errorLogger.warn('URL Validation', 'Failed to parse photo URL', { url, error: error.message });
+      return false;
+    }
+  }
+
+  /**
    * Process user message through Claude
    */
   async processUserMessage(message) {
@@ -1230,7 +1270,7 @@ class JapanDayTripApp {
       },
       {
         name: 'get_poi_summary',
-        description: 'Get a lightweight summary list of stored POIs (across all searches). Returns just id, name, category, genre, rating, price, time, coordinates. Defaults to top 100 POIs sorted by rating. Use filters (category, min_rating, search_text, open_after) to narrow results. If total_available > count in response, use filters instead of increasing limit to avoid token overflow.',
+        description: 'Get a lightweight summary list of stored POIs (across all searches). Returns: id, name, category, genre, rating, price, time, coordinates, source. The "source" field indicates "rurubu" (tourism POIs with full data) or "searchbox" (infrastructure with basic data). Defaults to top 100 POIs sorted by rating. Use filters (category, min_rating, search_text, open_after) to narrow results. If total_available > count in response, use filters instead of increasing limit to avoid token overflow.',
         input_schema: {
           type: 'object',
           properties: {
@@ -1484,7 +1524,8 @@ class JapanDayTripApp {
           rating: rating,
           price: props.price || null,
           time: props.time || null,
-          coordinates: feature.geometry?.coordinates || null
+          coordinates: feature.geometry?.coordinates || null,
+          source: search.source || 'rurubu' // Add source field (rurubu or searchbox)
         });
       });
     });
@@ -1944,25 +1985,36 @@ Rating: [translated rating]`;
     const photoDiv = document.getElementById('poiPhoto');
     const photoImg = document.getElementById('poiPhotoImg');
     if (properties.photo) {
-      // Reset any previous error handlers
-      photoImg.onerror = null;
-      photoImg.onload = null;
+      // Validate photo URL before using
+      const isValidUrl = this.validatePhotoUrl(properties.photo);
 
-      // Set up error handler before setting src
-      photoImg.onerror = () => {
-        errorLogger.warn('POI Modal', 'Failed to load photo', {
+      if (isValidUrl) {
+        // Reset any previous error handlers
+        photoImg.onerror = null;
+        photoImg.onload = null;
+
+        // Set up error handler before setting src
+        photoImg.onerror = () => {
+          errorLogger.warn('POI Modal', 'Failed to load photo', {
+            poiName: properties.title || properties.name,
+            photoUrl: properties.photo
+          });
+          photoDiv.style.display = 'none';
+        };
+
+        // Show photo on successful load
+        photoImg.onload = () => {
+          photoDiv.style.display = 'block';
+        };
+
+        photoImg.src = properties.photo;
+      } else {
+        errorLogger.warn('POI Modal', 'Invalid photo URL blocked', {
           poiName: properties.title || properties.name,
           photoUrl: properties.photo
         });
         photoDiv.style.display = 'none';
-      };
-
-      // Show photo on successful load
-      photoImg.onload = () => {
-        photoDiv.style.display = 'block';
-      };
-
-      photoImg.src = properties.photo;
+      }
     } else {
       photoDiv.style.display = 'none';
     }

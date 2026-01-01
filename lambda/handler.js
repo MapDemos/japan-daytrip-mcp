@@ -3,6 +3,24 @@
  * Supports both Claude and Gemini APIs
  * Handles CORS and forwards requests to appropriate AI provider
  * Supports streaming responses for better UX
+ *
+ * Security Features:
+ * - Origin validation (set ALLOWED_ORIGINS env var)
+ * - Referer header validation
+ * - CORS configuration via Lambda Function URL settings
+ *
+ * Recommended Environment Variables:
+ * - ALLOWED_ORIGINS: Comma-separated list of allowed origins (e.g., "https://example.com,https://www.example.com")
+ * - CLAUDE_API_KEY: Your Claude API key
+ * - GEMINI_API_KEY: Your Gemini API key (optional)
+ * - DEFAULT_AI_PROVIDER: 'claude' or 'gemini'
+ *
+ * Additional Security Recommendations:
+ * - Enable AWS WAF for DDoS protection
+ * - Configure Lambda throttling limits
+ * - Enable CloudWatch logging for monitoring
+ * - Use AWS Secrets Manager for API keys
+ * - Set up API Gateway with rate limiting if needed
  */
 
 import { pipeline } from 'stream/promises';
@@ -12,6 +30,44 @@ export const handler = async (event) => {
   // No need to add CORS headers here to avoid duplicates
 
   try {
+    // CSRF Protection: Validate Origin header
+    const origin = event.headers.origin || event.headers.Origin;
+    const allowedOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim());
+
+    // If ALLOWED_ORIGINS is configured, enforce it
+    if (allowedOrigins.length > 0 && allowedOrigins[0] !== '') {
+      if (!origin || !allowedOrigins.includes(origin)) {
+        console.warn('[Security] Request blocked - invalid origin:', origin);
+        return {
+          statusCode: 403,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ error: 'Forbidden: Invalid origin' })
+        };
+      }
+    }
+
+    // Validate Referer header as additional CSRF protection
+    const referer = event.headers.referer || event.headers.Referer;
+    if (referer) {
+      try {
+        const refererUrl = new URL(referer);
+        // If origin is set, referer should match
+        if (origin) {
+          const originUrl = new URL(origin);
+          if (refererUrl.hostname !== originUrl.hostname) {
+            console.warn('[Security] Request blocked - referer/origin mismatch');
+            return {
+              statusCode: 403,
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ error: 'Forbidden: Invalid referer' })
+            };
+          }
+        }
+      } catch (error) {
+        console.warn('[Security] Invalid referer URL:', referer);
+      }
+    }
+
     // Parse request body
     const requestBody = JSON.parse(event.body);
 
