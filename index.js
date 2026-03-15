@@ -35,6 +35,7 @@ import { errorLogger, safeGetElement, getUserLocation } from '@mapdemos/ai-frame
 import { JAPAN_TRANSLATIONS } from './translations/japan-i18n.js';
 import { JapanThinkingMessages } from './modules/japan-thinking-messages.js';
 import { buildJapanTravelPrompt } from './prompts/japan-system-prompt.js';
+import { buildSimplePrompt } from './prompts/simple-prompt.js';
 
 // Import BaseApp from framework
 import { BaseApp } from '@mapdemos/ai-framework/app';
@@ -50,8 +51,50 @@ import { BaseApp } from '@mapdemos/ai-framework/app';
  */
 class JapanDayTripApp extends BaseApp {
   constructor() {
+    // Check URL parameter for prompt type and customize translations if needed
+    const urlParams = new URLSearchParams(window.location.search);
+    const promptType = urlParams.get('prompt');
+
+    // Clone translations to avoid mutating the original
+    const translations = JSON.parse(JSON.stringify(JAPAN_TRANSLATIONS));
+
+    // Customize welcome message for simple mode
+    if (promptType === 'simple') {
+      translations.ja.system.welcome = `👋 こんにちは！私は日本旅行アシスタントです。
+
+できること:
+• 日本全国のレストラン、お店、観光地を探す
+• 隠れた名所や人気スポットを発見
+• 日帰り旅行やツアーを計画
+• 場所間のルートや道順を取得
+• 一定時間や距離内で到達可能なエリアを表示
+• すべてをインタラクティブマップに表示
+
+試しに聞いてみてください:
+• 「渋谷のレストランを探して」
+• 「京都のお寺を見せて」
+• 「原宿で何ができる？」
+• 「浅草の日帰りプランを作って」`;
+
+      translations.en.system.welcome = `👋 Hello! I'm your Japan travel assistant.
+
+I can help you:
+• Find restaurants, shops, and attractions across Japan
+• Discover hidden gems and popular spots
+• Plan day trips and create itineraries
+• Get directions and routes between locations
+• Show areas reachable within a certain time or distance
+• Show everything on an interactive map
+
+Try asking:
+• "Find restaurants in Shibuya"
+• "Show me temples in Kyoto"
+• "What can I do in Harajuku?"
+• "Plan a day trip in Asakusa"`;
+    }
+
     // Call parent constructor with config, translations, and thinking messages
-    super(CONFIG, JAPAN_TRANSLATIONS, new JapanThinkingMessages());
+    super(CONFIG, translations, new JapanThinkingMessages());
 
     // Define Japan region bounds for location checking
     this.regionBounds = {
@@ -98,8 +141,19 @@ class JapanDayTripApp extends BaseApp {
 
   /**
    * Get system prompt builder (override from BaseApp)
+   * Supports URL parameter ?prompt=simple to use simplified prompt
    */
   getSystemPromptBuilder() {
+    // Check URL parameter for prompt type
+    const urlParams = new URLSearchParams(window.location.search);
+    const promptType = urlParams.get('prompt');
+
+    if (promptType === 'simple') {
+      console.log('Using simple prompt');
+      return buildSimplePrompt;
+    }
+
+    console.log('Using default Japan travel prompt');
     return buildJapanTravelPrompt;
   }
 

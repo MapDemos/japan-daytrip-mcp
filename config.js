@@ -41,7 +41,7 @@ export const CONFIG = {
   CLAUDE_API_PROXY: 'https://okqfpyxf4oe6htegrlcgrwdssa0yoxcr.lambda-url.us-east-1.on.aws/',
 
   // Claude model to use
-  CLAUDE_MODEL: 'claude-haiku-4-5-20251001',
+  CLAUDE_MODEL: 'claude-sonnet-4-6',
 
   // ============================================
   // GEMINI SETTINGS
