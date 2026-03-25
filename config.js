@@ -222,10 +222,20 @@ export const CONFIG = {
   TTS_PITCH: 1.0,                      // Pitch (0-2 for Web Speech, -20 to 20 for Google)
   TTS_VOLUME: 1.0,                     // Volume (0-1, default: 1.0)
 
-  // Google Cloud TTS voice name (when TTS_USE_GOOGLE_CLOUD is true)
+  // Google Cloud TTS voice names by language (when TTS_USE_GOOGLE_CLOUD is true)
+  // Maps language codes to Google Cloud TTS voice names
   // Examples: 'ja-JP-Neural2-B' (female), 'ja-JP-Neural2-C' (male)
   //           'en-US-Neural2-F' (female), 'en-US-Neural2-J' (male)
-  TTS_GOOGLE_VOICE_NAME: 'ja-JP-Neural2-D',  // Male professional voice
+  //           'ko-KR-Neural2-A' (female), 'ko-KR-Neural2-C' (male)
+  TTS_GOOGLE_VOICE_NAMES: {
+    en: 'en-US-Neural2-J',    // English: Male voice
+    ja: 'ja-JP-Neural2-D',    // Japanese: Male professional voice
+    ko: 'ko-KR-Neural2-C'     // Korean: Male voice
+  },
+
+  // Legacy: Single voice name (deprecated, use TTS_GOOGLE_VOICE_NAMES instead)
+  // Kept for backward compatibility
+  TTS_GOOGLE_VOICE_NAME: 'ja-JP-Neural2-D',
 
   // Use AI to summarize text before speaking (removes verbose data intelligently)
   // If true: Makes separate API call to Claude for smart summarization (~0.5-2s delay, +17% cost)

@@ -50,7 +50,25 @@ export class JapanThinkingMessages {
       '広島': 'Hiroshima',
       '福岡': 'Fukuoka',
       '札幌': 'Sapporo',
-      '名古屋': 'Nagoya'
+      '名古屋': 'Nagoya',
+      // Korean
+      '도쿄': 'Tokyo',
+      '시부야': 'Shibuya',
+      '신주쿠': 'Shinjuku',
+      '아사쿠사': 'Asakusa',
+      '하라주쿠': 'Harajuku',
+      '긴자': 'Ginza',
+      '아키하바라': 'Akihabara',
+      '롯폰기': 'Roppongi',
+      '교토': 'Kyoto',
+      '오사카': 'Osaka',
+      '요코하마': 'Yokohama',
+      '나라': 'Nara',
+      '고베': 'Kobe',
+      '히로시마': 'Hiroshima',
+      '후쿠오카': 'Fukuoka',
+      '삿포로': 'Sapporo',
+      '나고야': 'Nagoya'
     };
 
     for (const [key, value] of Object.entries(locations)) {
@@ -67,25 +85,25 @@ export class JapanThinkingMessages {
    * Japan-specific categories (temples, shrines, onsen, etc.)
    */
   extractCategory(question) {
-    if (question.match(/restaurant|food|eat|dining|sushi|ramen|cuisine|レストラン|食事|飲食|寿司|ラーメン|料理|食べ物/)) {
+    if (question.match(/restaurant|food|eat|dining|sushi|ramen|cuisine|レストラン|食事|飲食|寿司|ラーメン|料理|食べ物|레스토랑|음식점|식당|맛집|초밥|라멘|요리/)) {
       return 'restaurants and dining options';
     }
-    if (question.match(/shop|shopping|store|buy|mall|ショッピング|買い物|店|ストア|モール/)) {
+    if (question.match(/shop|shopping|store|buy|mall|ショッピング|買い物|店|ストア|モール|쇼핑|가게|상점|매장|몰/)) {
       return 'shopping destinations';
     }
-    if (question.match(/temple|shrine|historic|traditional|cultural|museum|寺|神社|歴史|伝統|文化|博物館|美術館/)) {
+    if (question.match(/temple|shrine|historic|traditional|cultural|museum|寺|神社|歴史|伝統|文化|博物館|美術館|사원|신사|역사|전통|문화|박물관|미술관/)) {
       return 'cultural and historical sites';
     }
-    if (question.match(/park|garden|nature|outdoor|公園|庭園|自然|アウトドア|屋外/)) {
+    if (question.match(/park|garden|nature|outdoor|公園|庭園|自然|アウトドア|屋外|공원|정원|자연|야외|아웃도어/)) {
       return 'parks and outdoor spaces';
     }
-    if (question.match(/entertainment|fun|activity|enjoy|エンターテイメント|娯楽|アクティビティ|遊び|楽しむ/)) {
+    if (question.match(/entertainment|fun|activity|enjoy|エンターテイメント|娯楽|アクティビティ|遊び|楽しむ|엔터테인먼트|오락|액티비티|즐기다|놀이/)) {
       return 'entertainment venues';
     }
-    if (question.match(/hotel|accommodation|stay|ホテル|宿泊|泊まる/)) {
+    if (question.match(/hotel|accommodation|stay|ホテル|宿泊|泊まる|호텔|숙박|묵다/)) {
       return 'accommodation options';
     }
-    if (question.match(/cafe|coffee|カフェ|コーヒー|喫茶/)) {
+    if (question.match(/cafe|coffee|カフェ|コーヒー|喫茶|카페|커피/)) {
       return 'cafes and coffee shops';
     }
 
@@ -99,8 +117,22 @@ export class JapanThinkingMessages {
   generateMessages({ question, location, category, action, isJapanese }) {
     const messages = [];
 
+    // Detect Korean language (Hangul characters: \uAC00-\uD7AF)
+    const isKorean = /[\uAC00-\uD7AF]/.test(question);
+
     // Base thinking messages (10 variations)
-    if (isJapanese) {
+    if (isKorean) {
+      messages.push('🤔 생각하는 중...');
+      messages.push('💭 검토 중...');
+      messages.push('🧠 처리 중...');
+      messages.push('📖 요청 분석 중...');
+      messages.push('🔍 쿼리 이해 중...');
+      messages.push('💡 계획 작성 중...');
+      messages.push('⚙️ 검색 초기화 중...');
+      messages.push('🎯 세부사항에 집중 중...');
+      messages.push('📋 요청 파싱 중...');
+      messages.push('🔎 쿼리 조사 중...');
+    } else if (isJapanese) {
       messages.push('🤔 考え中...');
       messages.push('💭 検討中...');
       messages.push('🧠 処理中...');
@@ -126,7 +158,23 @@ export class JapanThinkingMessages {
 
     // Location-specific messages (15+ variations)
     if (location) {
-      if (isJapanese) {
+      if (isKorean) {
+        messages.push(`🗺️ ${location} 탐색 중...`);
+        messages.push(`🔍 ${location} 지역 검색 중...`);
+        messages.push(`📍 ${location}의 명소 찾는 중...`);
+        messages.push(`🌏 ${location} 안내 중...`);
+        messages.push(`🧭 ${location} 확인 중...`);
+        messages.push(`🗾 ${location} 지역 조사 중...`);
+        messages.push(`🏙️ ${location} 구역 스캔 중...`);
+        messages.push(`🎌 ${location} 주변 탐색 중...`);
+        messages.push(`🚶 ${location} 산책 중...`);
+        messages.push(`👀 ${location} 둘러보는 중...`);
+        messages.push(`🔦 ${location} 조사 중...`);
+        messages.push(`🗼 ${location}의 명소 발견 중...`);
+        messages.push(`🌆 ${location}의 스팟 열람 중...`);
+        messages.push(`🏯 ${location}의 보물 발굴 중...`);
+        messages.push(`📸 ${location}의 옵션 확인 중...`);
+      } else if (isJapanese) {
         messages.push(`🗺️ ${location}を探索中...`);
         messages.push(`🔍 ${location}エリアを検索中...`);
         messages.push(`📍 ${location}のスポットを検索中...`);
@@ -163,7 +211,28 @@ export class JapanThinkingMessages {
 
     // Category-specific messages (50+ variations for Japan tourism)
     if (category === 'restaurants and dining options') {
-      if (isJapanese) {
+      if (isKorean) {
+        messages.push('🍜 음식점 탐색 중...');
+        messages.push('🍱 식사 장소 검색 중...');
+        messages.push('🍽️ 레스토랑 열람 중...');
+        messages.push('⭐ 평점 확인 중...');
+        messages.push('🔥 인기 음식점 찾는 중...');
+        messages.push('🥢 맛집 발견 중...');
+        messages.push('🍲 메뉴 확인 중...');
+        messages.push('👨‍🍳 셰프 추천 찾는 중...');
+        messages.push('📝 리뷰 읽는 중...');
+        messages.push('🌟 평가 분석 중...');
+        messages.push('🍣 요리 종류 탐색 중...');
+        messages.push('🥘 특선 요리 확인 중...');
+        messages.push('💰 가격 비교 중...');
+        messages.push('⏰ 영업시간 확인 중...');
+        messages.push('🚶 도보 거리 계산 중...');
+        messages.push('🗣️ 고객 피드백 분석 중...');
+        messages.push('🏆 최고 추천 찾는 중...');
+        messages.push('📊 옵션 순위 매기는 중...');
+        messages.push('🎌 정통 음식점 찾는 중...');
+        messages.push('✨ 숨은 명소 탐색 중...');
+      } else if (isJapanese) {
         messages.push('🍜 飲食店を探索中...');
         messages.push('🍱 食事会場を検索中...');
         messages.push('🍽️ レストランを閲覧中...');
@@ -207,7 +276,23 @@ export class JapanThinkingMessages {
         messages.push('✨ seeking hidden gems...');
       }
     } else if (category === 'shopping destinations') {
-      if (isJapanese) {
+      if (isKorean) {
+        messages.push('🛍️ 쇼핑 스팟 열람 중...');
+        messages.push('🏬 상점 스캔 중...');
+        messages.push('✨ 트렌디한 가게 찾는 중...');
+        messages.push('👜 부티크 발견 중...');
+        messages.push('🎁 선물 가게 찾는 중...');
+        messages.push('🛒 시장 탐색 중...');
+        messages.push('💎 독특한 제품 찾는 중...');
+        messages.push('🏪 소매 지역 확인 중...');
+        messages.push('🎨 장인 가게 찾는 중...');
+        messages.push('👗 패션 지구 열람 중...');
+        messages.push('📱 전자제품 찾는 중...');
+        messages.push('🎭 기념품 가게 발견 중...');
+        messages.push('🌸 전문 매장 탐색 중...');
+        messages.push('💫 할인 상품 찾는 중...');
+        messages.push('🏷️ 옵션 비교 중...');
+      } else if (isJapanese) {
         messages.push('🛍️ ショッピングスポットを閲覧中...');
         messages.push('🏬 店舗をスキャン中...');
         messages.push('✨ トレンディな店を検索中...');
@@ -241,7 +326,23 @@ export class JapanThinkingMessages {
         messages.push('🏷️ comparing options...');
       }
     } else if (category === 'cultural and historical sites') {
-      if (isJapanese) {
+      if (isKorean) {
+        messages.push('⛩️ 문화 유산 발견 중...');
+        messages.push('🏛️ 역사적 명소 탐색 중...');
+        messages.push('🏯 사원 찾는 중...');
+        messages.push('⛩️ 신사 찾는 중...');
+        messages.push('🎎 유산지 발굴 중...');
+        messages.push('📜 역사 확인 중...');
+        messages.push('🗿 기념물 찾는 중...');
+        messages.push('🏺 박물관 발견 중...');
+        messages.push('🎨 미술관 탐색 중...');
+        messages.push('🌸 전통 명소 찾는 중...');
+        messages.push('🎋 문화 센터 찾는 중...');
+        messages.push('🏮 역사 지구 찾는 중...');
+        messages.push('📖 중요성 조사 중...');
+        messages.push('🗾 유산 탐색 중...');
+        messages.push('⛰️ 성지 찾는 중...');
+      } else if (isJapanese) {
         messages.push('⛩️ 文化遺産を発見中...');
         messages.push('🏛️ 歴史的スポットを探索中...');
         messages.push('🏯 寺院を検索中...');
@@ -275,7 +376,23 @@ export class JapanThinkingMessages {
         messages.push('⛰️ finding sacred sites...');
       }
     } else if (category === 'parks and outdoor spaces') {
-      if (isJapanese) {
+      if (isKorean) {
+        messages.push('🌳 자연 명소 찾는 중...');
+        messages.push('🌸 야외 지역 탐색 중...');
+        messages.push('🏞️ 공원 발견 중...');
+        messages.push('🌲 정원 찾는 중...');
+        messages.push('🌺 녹지 찾는 중...');
+        messages.push('🦋 경치 좋은 곳 찾는 중...');
+        messages.push('🌅 전망대 탐색 중...');
+        messages.push('🏔️ 자연 산책로 발견 중...');
+        messages.push('🌊 해안가 찾는 중...');
+        messages.push('🌄 평화로운 지역 찾는 중...');
+        messages.push('🍂 계절 아름다움 탐색 중...');
+        messages.push('🦢 고요한 장소 찾는 중...');
+        messages.push('🎋 대나무 숲 발견 중...');
+        messages.push('🌷 꽃 정원 찾는 중...');
+        messages.push('🌿 선 정원 찾는 중...');
+      } else if (isJapanese) {
         messages.push('🌳 自然スポットを検索中...');
         messages.push('🌸 屋外エリアを探索中...');
         messages.push('🏞️ 公園を発見中...');
@@ -309,7 +426,23 @@ export class JapanThinkingMessages {
         messages.push('🌿 finding zen gardens...');
       }
     } else if (category === 'entertainment venues') {
-      if (isJapanese) {
+      if (isKorean) {
+        messages.push('🎮 엔터테인먼트 검색 중...');
+        messages.push('🎪 재미있는 활동 찾는 중...');
+        messages.push('🎭 공연장 찾는 중...');
+        messages.push('🎬 관광 명소 발견 중...');
+        messages.push('🎨 체험 탐색 중...');
+        messages.push('🎯 액티비티 찾는 중...');
+        messages.push('🎡 놀이시설 찾는 중...');
+        messages.push('🎤 공연 찾는 중...');
+        messages.push('🎸 나이트라이프 발견 중...');
+        messages.push('🎲 게임 스팟 찾는 중...');
+        messages.push('🎳 여가 옵션 탐색 중...');
+        messages.push('🎪 체험 찾는 중...');
+        messages.push('🎭 쇼 열람 중...');
+        messages.push('🎨 창작 공간 찾는 중...');
+        messages.push('🎵 음악 공연장 찾는 중...');
+      } else if (isJapanese) {
         messages.push('🎮 エンターテイメントを検索中...');
         messages.push('🎪 楽しいアクティビティを検索中...');
         messages.push('🎭 会場を検索中...');
@@ -343,7 +476,23 @@ export class JapanThinkingMessages {
         messages.push('🎵 locating music venues...');
       }
     } else if (category === 'cafes and coffee shops') {
-      if (isJapanese) {
+      if (isKorean) {
+        messages.push('☕ 커피 스팟 찾는 중...');
+        messages.push('🍰 아늑한 카페 찾는 중...');
+        messages.push('🥐 베이커리 카페 발견 중...');
+        messages.push('🫖 찻집 찾는 중...');
+        messages.push('☕ 스페셜티 커피 찾는 중...');
+        messages.push('🧁 디저트 카페 열람 중...');
+        messages.push('📚 독서 카페 찾는 중...');
+        messages.push('🎨 장인 카페 탐색 중...');
+        messages.push('🌿 조용한 공간 찾는 중...');
+        messages.push('💻 작업 공간 찾는 중...');
+        messages.push('🍵 티 스팟 발견 중...');
+        messages.push('🥞 브런치 카페 찾는 중...');
+        messages.push('☕ 로스터리 탐색 중...');
+        messages.push('🏮 분위기 좋은 카페 찾는 중...');
+        messages.push('✨ 인스타그램 핫플 찾는 중...');
+      } else if (isJapanese) {
         messages.push('☕ コーヒースポットを探索中...');
         messages.push('🍰 居心地の良いカフェを検索中...');
         messages.push('🥐 ベーカリーカフェを発見中...');
@@ -377,7 +526,18 @@ export class JapanThinkingMessages {
         messages.push('✨ seeking Instagram spots...');
       }
     } else {
-      if (isJapanese) {
+      if (isKorean) {
+        messages.push('📍 장소 검색 중...');
+        messages.push('✨ 옵션 수집 중...');
+        messages.push('🔍 가능성 탐색 중...');
+        messages.push('🗺️ 장소 매핑 중...');
+        messages.push('🎯 매칭 찾는 중...');
+        messages.push('📌 스팟 특정 중...');
+        messages.push('🌟 장소 발견 중...');
+        messages.push('🔎 데이터베이스 스캔 중...');
+        messages.push('📊 옵션 분석 중...');
+        messages.push('🎨 선택 큐레이션 중...');
+      } else if (isJapanese) {
         messages.push('📍 場所を検索中...');
         messages.push('✨ オプションを収集中...');
         messages.push('🔍 可能性を探索中...');
@@ -404,7 +564,18 @@ export class JapanThinkingMessages {
 
     // Action-specific messages (10 variations)
     if (action === 'plan') {
-      if (isJapanese) {
+      if (isKorean) {
+        messages.push('🗓️ 여행 일정 계획 중...');
+        messages.push('🚃 경로 계산 중...');
+        messages.push('⏱️ 시간 예상 중...');
+        messages.push('🗺️ 여정 지도 작성 중...');
+        messages.push('📋 일정 정리 중...');
+        messages.push('🎯 경로 최적화 중...');
+        messages.push('🚶 도보 계획 중...');
+        messages.push('⛩️ 경유지 정렬 중...');
+        messages.push('📍 목적지 표시 중...');
+        messages.push('🧭 코스 계획 중...');
+      } else if (isJapanese) {
         messages.push('🗓️ 旅程を計画中...');
         messages.push('🚃 ルートを計算中...');
         messages.push('⏱️ 時間を見積もり中...');
@@ -430,7 +601,38 @@ export class JapanThinkingMessages {
     }
 
     // General processing messages (30 variations)
-    if (isJapanese) {
+    if (isKorean) {
+      messages.push('🔧 데이터 조정 중...');
+      messages.push('⚡ 결과 처리 중...');
+      messages.push('📊 옵션 평가 중...');
+      messages.push('🎯 추천 준비 중...');
+      messages.push('📍 지도에 표시 중...');
+      messages.push('🔨 제안 작성 중...');
+      messages.push('✨ 결과 다듬는 중...');
+      messages.push('🎨 조사 결과 정리 중...');
+      messages.push('📝 정보 편집 중...');
+      messages.push('🔍 세부사항 확인 중...');
+      messages.push('⚙️ 데이터 조립 중...');
+      messages.push('🎪 옵션 정리 중...');
+      messages.push('🧩 퍼즐 조립 중...');
+      messages.push('🎭 결과 준비 중...');
+      messages.push('🔮 데이터베이스 참조 중...');
+      messages.push('📚 항목 확인 중...');
+      messages.push('🎯 최적 매칭 찾는 중...');
+      messages.push('✅ 선택 검증 중...');
+      messages.push('🌟 즐겨찾기 강조 중...');
+      messages.push('🏆 최고 선택 중...');
+      messages.push('📈 품질별 정렬 중...');
+      messages.push('🎨 컬렉션 큐레이션 중...');
+      messages.push('💎 보석 발견 중...');
+      messages.push('🔬 후보 검사 중...');
+      messages.push('🎪 옵션 관리 중...');
+      messages.push('🧭 위치 삼각측량 중...');
+      messages.push('📐 거리 계산 중...');
+      messages.push('🎲 가능성 섞는 중...');
+      messages.push('🔄 교차 참조 중...');
+      messages.push('✨ 선택 최종화 중...');
+    } else if (isJapanese) {
       messages.push('🔧 データを調整中...');
       messages.push('⚡ 結果を処理中...');
       messages.push('📊 オプションを評価中...');

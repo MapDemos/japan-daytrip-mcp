@@ -142,7 +142,7 @@ See README.md for setup instructions.`,
     subtitle: '日本全国の食べる・買う・遊ぶ・見るスポットを発見',
 
     // Language toggle
-    langToggle: 'English',
+    langToggle: '한국어',
 
     // Input
     inputPlaceholder: '日本の場所について聞いてください...（例：「渋谷のレストランを探して」）',
@@ -265,6 +265,138 @@ config.jsでAPIキーを更新してください:
       hours: '営業時間：',
       rating: 'おすすめ：',
       price: '料金：'
+    }
+  },
+
+  ko: {
+    // Header
+    title: '🇯🇵 AI 여행 가이드',
+    subtitle: '일본 전역의 맛집, 쇼핑, 관광 명소를 발견하세요',
+
+    // Language toggle
+    langToggle: 'English',
+
+    // Input
+    inputPlaceholder: '일본의 장소에 대해 물어보세요... (예: "시부야의 레스토랑 찾아줘")',
+    sendButton: '전송',
+
+    // Categories
+    categories: {
+      eat: '🍽️ 음식점',
+      buy: '🛍️ 쇼핑',
+      enjoy: '🎪  엔터테인먼트',
+      see: '👁️ 관광'
+    },
+
+    // Map controls
+    clearMap: '지도 지우기',
+    clearChat: '채팅 지우기',
+    recenter: '현재 위치',
+
+    // Status messages
+    status: {
+      initializing: '초기화 중...',
+      loading: '로딩 중...',
+      processing: '요청 처리 중...',
+      searching: '장소 검색 중...',
+      callingMapbox: 'Mapbox 서비스 조회 중...',
+      callingTools: 'Rurubu 데이터베이스 검색 중...',
+      callingRurubu: 'Rurubu 데이터베이스 검색 중...', // Deprecated: use callingTools
+      visualizing: '지도 업데이트 중...',
+      optimizing: '대화 기록 최적화 중...',
+      ready: '준비 완료',
+      error: '오류 발생'
+    },
+
+    // Thinking overlay
+    thinking: {
+      overlayTitle: '🤔 검색 중...'
+    },
+
+    // System messages
+    system: {
+      welcome: `👋 안녕하세요! Claude, Mapbox, Rurubu 데이터를 활용한 일본 여행 가이드입니다.
+
+가능한 기능:
+• 일본 전역의 레스토랑, 상점, 관광지 검색
+• 숨겨진 명소와 인기 장소 발견
+• 당일 여행 및 일정 계획
+• 장소 간 경로 및 길찾기
+• 특정 시간이나 거리 내 도달 가능한 지역 표시
+• 인터랙티브 지도에 모든 정보 표시
+
+이렇게 물어보세요:
+• "시부야의 레스토랑 찾아줘"
+• "교토의 사찰 보여줘"
+• "하라주쿠에서 뭘 할 수 있어?"
+• "아사쿠사 당일 여행 계획 짜줘"`,
+
+      cleared: '대화 및 지도를 지웠습니다',
+      mapCleared: '지도를 지웠습니다',
+      mapRecentered: '지도를 현재 위치로 이동했습니다',
+
+      configError: `⚠️ 설정 오류
+
+config.js에서 API 키를 업데이트하세요:
+• Claude API 키: https://console.anthropic.com/ 에서 발급
+• Mapbox 액세스 토큰: https://account.mapbox.com/access-tokens/ 에서 발급
+
+자세한 내용은 README.md를 참조하세요.`,
+
+      initError: '애플리케이션 초기화에 실패했습니다. 페이지를 새로고침하세요.'
+    },
+
+    // Errors (framework uses 'error.' prefix)
+    error: {
+      noApiKey: 'API 키가 설정되지 않았습니다',
+      networkError: '네트워크 오류. 연결을 확인하세요.',
+      timeout: '요청 시간이 초과되었습니다',
+      unknown: '알 수 없는 오류가 발생했습니다',
+      inputTooLongTitle: '입력이 너무 깁니다',
+      inputTooLongMessage: '메시지는 {max}자 이내로 작성해주세요.',
+      rateLimitTitle: '전송이 너무 빠릅니다',
+      rateLimitMessage: '잠시 후 다시 시도해주세요.',
+      tokenOverflowTitle: '정보가 너무 많습니다',
+      tokenOverflowMessage: 'Claude가 처리할 수 있는 정보량을 초과했습니다. 채팅을 지우고 새로운 대화를 시작하세요.',
+      processingTitle: '오류',
+      processingMessage: '요청 처리 중 오류가 발생했습니다.',
+      configTitle: '설정 오류',
+      configMessage: '설정을 확인하세요.',
+      initializationTitle: '초기화 오류',
+      initializationMessage: '애플리케이션 초기화에 실패했습니다. 페이지를 새로고침하세요.',
+      speechRecognitionTitle: '음성 인식 오류',
+      speechRecognitionMessage: '음성 인식에 실패했습니다. 다시 시도해주세요.',
+      microphonePermissionMessage: '마이크 액세스가 거부되었습니다. 브라우저 설정에서 마이크 액세스를 허용해주세요.',
+      noSpeechMessage: '음성이 감지되지 않았습니다. 다시 시도해주세요.'
+    },
+
+    // Legacy errors (for backward compatibility)
+    errors: {
+      noApiKey: 'API 키가 설정되지 않았습니다',
+      networkError: '네트워크 오류. 연결을 확인하세요.',
+      timeout: '요청 시간이 초과되었습니다',
+      unknown: '알 수 없는 오류가 발생했습니다',
+      inputTooLong: '입력이 너무 깁니다',
+      inputTooLongMessage: '메시지는 {limit}자 이내로 작성해주세요. 현재 길이: {current}자',
+      rateLimitError: '전송이 너무 빠릅니다',
+      rateLimitMessage: '잠시 후 다시 시도해주세요.',
+      error: '오류',
+      tooMuchInfo: '정보가 너무 많습니다',
+      tooMuchInfoMessage: 'Claude가 처리할 수 있는 정보량을 초과했습니다. 채팅을 지우고 새로운 대화를 시작하세요.',
+      clearChatButton: '채팅 지우기',
+      speechRecognitionTitle: '음성 인식 오류',
+      speechRecognitionMessage: '음성 인식에 실패했습니다. 다시 시도해주세요.',
+      microphonePermissionMessage: '마이크 액세스가 거부되었습니다. 브라우저 설정에서 마이크 액세스를 허용해주세요.',
+      noSpeechMessage: '음성이 감지되지 않았습니다. 다시 시도해주세요.'
+    },
+
+    // POI Modal labels
+    poi: {
+      address: '주소:',
+      phone: '전화:',
+      hours: '영업시간:',
+      rating: '평점:',
+      price: '가격:'
     }
   }
 };
