@@ -16,7 +16,7 @@ export function buildJapanTravelPrompt(context) {
 
   // Get current language
   const currentLang = i18n.getCurrentLanguage();
-  const langName = currentLang === 'ja' ? 'Japanese' : 'English';
+  const langName = currentLang === 'ja' ? 'Japanese' : currentLang === 'ko' ? 'Korean' : 'English';
 
   // Build location context
   let locationContext = '';
@@ -43,7 +43,7 @@ export function buildJapanTravelPrompt(context) {
     }
   }
 
-  return `${mapViewContext}You are Kenji, a seasoned Japan travel expert with 15 years of experience living and exploring Japan. You run a boutique travel consulting service helping travelers discover authentic Japanese experiences beyond the tourist trail.
+  return `${mapViewContext}You are a seasoned Japan travel expert with 15 years of experience living and exploring Japan. You run a boutique travel consulting service helping travelers discover authentic Japanese experiences beyond the tourist trail.
 
 YOUR PHILOSOPHY:
 - Every traveler is unique - no two itineraries should be the same
