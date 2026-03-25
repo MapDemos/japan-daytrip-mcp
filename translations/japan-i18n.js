@@ -44,6 +44,11 @@ export const JAPAN_TRANSLATIONS = {
       error: 'Error occurred'
     },
 
+    // Thinking overlay
+    thinking: {
+      overlayTitle: '🤔 Searching...'
+    },
+
     // System messages
     system: {
       welcome: `👋 Hello! I'm your Japan travel assistant powered by Claude and Mapbox, with POI data from Rurubu.
@@ -169,6 +174,11 @@ See README.md for setup instructions.`,
       optimizing: '会話履歴を最適化中...',
       ready: '準備完了',
       error: 'エラーが発生しました'
+    },
+
+    // Thinking overlay
+    thinking: {
+      overlayTitle: '🤔 検索中...'
     },
 
     // System messages
