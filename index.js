@@ -1136,7 +1136,6 @@ Rating: [translated rating]`;
       this.updatePoiModalLabels();
 
       // Translate to target language if needed (English or Korean)
-      const currentLang = this.i18n.getCurrentLanguage();
       if (currentLang === 'en' || currentLang === 'ko') {
         try {
           properties = await this.translatePoiData(properties, currentLang);
