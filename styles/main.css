@@ -1074,15 +1074,47 @@ body {
   font-size: 2rem;
   font-weight: 700;
   color: white;
-  margin-bottom: var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
   text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
-.thinking-overlay-subtitle {
-  font-size: 1.2rem;
+.thinking-overlay-question {
+  font-size: 1.3rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.95);
+  margin-bottom: var(--spacing-lg);
+  padding: var(--spacing-md) var(--spacing-lg);
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  border-left: 4px solid var(--primary-blue);
+  line-height: 1.5;
+}
+
+.thinking-overlay-status {
+  margin-bottom: var(--spacing-lg);
+  padding: var(--spacing-md) 0;
+}
+
+.thinking-overlay-status .thinking-status-line {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: var(--spacing-md);
+  font-size: 1.1rem;
   color: rgba(255, 255, 255, 0.9);
-  margin-bottom: var(--spacing-xl);
-  line-height: 1.6;
+}
+
+.thinking-overlay-status .thinking-status {
+  font-weight: 500;
+}
+
+.thinking-overlay-status .thinking-timer {
+  font-family: var(--font-family-mono);
+  font-size: 1rem;
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.1);
+  padding: 4px 12px;
+  border-radius: 8px;
 }
 
 .thinking-overlay-progress {
