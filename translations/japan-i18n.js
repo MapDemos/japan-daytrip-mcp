@@ -77,7 +77,31 @@ See README.md for setup instructions.`,
       initError: 'Failed to initialize application. Please refresh the page.'
     },
 
-    // Errors
+    // Errors (framework uses 'error.' prefix)
+    error: {
+      noApiKey: 'API key not configured',
+      networkError: 'Network error. Please check your connection.',
+      timeout: 'Request timed out',
+      unknown: 'An unknown error occurred',
+      inputTooLongTitle: 'Input Too Long',
+      inputTooLongMessage: 'Please limit your message to {max} characters.',
+      rateLimitTitle: 'Too Fast',
+      rateLimitMessage: 'Please wait a moment before sending another message.',
+      tokenOverflowTitle: 'Too Much Information',
+      tokenOverflowMessage: 'There is too much information for Claude to process. Please clear the chat and start a new conversation.',
+      processingTitle: 'Error',
+      processingMessage: 'An error occurred while processing your request.',
+      configTitle: 'Configuration Error',
+      configMessage: 'Please check your configuration settings.',
+      initializationTitle: 'Initialization Error',
+      initializationMessage: 'Failed to initialize application. Please refresh the page.',
+      speechRecognitionTitle: 'Speech Recognition Error',
+      speechRecognitionMessage: 'Failed to recognize speech. Please try again.',
+      microphonePermissionMessage: 'Microphone access denied. Please allow microphone access in your browser settings.',
+      noSpeechMessage: 'No speech detected. Please try again.'
+    },
+
+    // Legacy errors (for backward compatibility)
     errors: {
       noApiKey: 'API key not configured',
       networkError: 'Network error. Please check your connection.',
@@ -90,7 +114,11 @@ See README.md for setup instructions.`,
       error: 'Error',
       tooMuchInfo: 'Too Much Information',
       tooMuchInfoMessage: 'There is too much information for Claude to process. Please clear the chat and start a new conversation.',
-      clearChatButton: 'Clear Chat'
+      clearChatButton: 'Clear Chat',
+      speechRecognitionTitle: 'Speech Recognition Error',
+      speechRecognitionMessage: 'Failed to recognize speech. Please try again.',
+      microphonePermissionMessage: 'Microphone access denied. Please allow microphone access in your browser settings.',
+      noSpeechMessage: 'No speech detected. Please try again.'
     },
 
     // POI Modal labels
@@ -176,7 +204,31 @@ config.jsでAPIキーを更新してください:
       initError: 'アプリケーションの初期化に失敗しました。ページを更新してください。'
     },
 
-    // Errors
+    // Errors (framework uses 'error.' prefix)
+    error: {
+      noApiKey: 'APIキーが設定されていません',
+      networkError: 'ネットワークエラー。接続を確認してください。',
+      timeout: 'リクエストがタイムアウトしました',
+      unknown: '不明なエラーが発生しました',
+      inputTooLongTitle: '入力が長すぎます',
+      inputTooLongMessage: 'メッセージは{max}文字以内にしてください。',
+      rateLimitTitle: '送信が早すぎます',
+      rateLimitMessage: '少し待ってから再度送信してください。',
+      tokenOverflowTitle: '情報が多すぎます',
+      tokenOverflowMessage: 'Claudeが処理できる情報量を超えています。チャットをクリアして新しい会話を始めてください。',
+      processingTitle: 'エラー',
+      processingMessage: 'リクエストの処理中にエラーが発生しました。',
+      configTitle: '設定エラー',
+      configMessage: '設定を確認してください。',
+      initializationTitle: '初期化エラー',
+      initializationMessage: 'アプリケーションの初期化に失敗しました。ページを更新してください。',
+      speechRecognitionTitle: '音声認識エラー',
+      speechRecognitionMessage: '音声認識に失敗しました。もう一度お試しください。',
+      microphonePermissionMessage: 'マイクへのアクセスが拒否されました。ブラウザ設定でマイクアクセスを許可してください。',
+      noSpeechMessage: '音声が検出されませんでした。もう一度お試しください。'
+    },
+
+    // Legacy errors (for backward compatibility)
     errors: {
       noApiKey: 'APIキーが設定されていません',
       networkError: 'ネットワークエラー。接続を確認してください。',
@@ -189,7 +241,11 @@ config.jsでAPIキーを更新してください:
       error: 'エラー',
       tooMuchInfo: '情報が多すぎます',
       tooMuchInfoMessage: 'Claudeが処理できる情報量を超えています。チャットをクリアして新しい会話を始めてください。',
-      clearChatButton: 'チャットをクリア'
+      clearChatButton: 'チャットをクリア',
+      speechRecognitionTitle: '音声認識エラー',
+      speechRecognitionMessage: '音声認識に失敗しました。もう一度お試しください。',
+      microphonePermissionMessage: 'マイクへのアクセスが拒否されました。ブラウザ設定でマイクアクセスを許可してください。',
+      noSpeechMessage: '音声が検出されませんでした。もう一度お試しください。'
     },
 
     // POI Modal labels

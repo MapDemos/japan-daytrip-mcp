@@ -151,6 +151,41 @@ body {
   transform: translateY(-1px);
 }
 
+/* TTS Toggle Button */
+.tts-toggle-btn {
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: rgba(255, 255, 255, 0.2);
+  color: var(--text-inverse);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: 1.2em;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+}
+
+.tts-toggle-btn:hover {
+  background: rgba(255, 255, 255, 0.3);
+  transform: translateY(-1px);
+}
+
+.tts-toggle-btn.active {
+  background: var(--accent-green);
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+.tts-toggle-btn.speaking {
+  animation: pulse-speaking 1s infinite;
+}
+
+@keyframes pulse-speaking {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+}
+
 /* ========================================
    Main Container
    ======================================== */
@@ -251,6 +286,28 @@ body {
   margin-bottom: var(--spacing-xs);
 }
 
+/* Message Speaker Icons */
+.message-speaker-icon {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1.2em;
+  padding: 4px 8px;
+  margin-left: 8px;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+  vertical-align: middle;
+}
+
+.message-speaker-icon:hover {
+  opacity: 1;
+}
+
+.message-speaker-icon.speaking {
+  opacity: 1;
+  animation: pulse-speaking 1s infinite;
+}
+
 /* ========================================
    Input Area
    ======================================== */
@@ -299,6 +356,47 @@ body {
 
 .send-btn:active {
   transform: translateY(0);
+}
+
+/* Microphone Button */
+.mic-btn {
+  padding: var(--spacing-md);
+  background: var(--accent-green);
+  color: var(--text-inverse);
+  border: none;
+  border-radius: 8px;
+  font-size: 1.2rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+}
+
+.mic-btn:hover {
+  background: #2e7d32;
+  transform: translateY(-1px);
+}
+
+.mic-btn:active {
+  transform: translateY(0);
+}
+
+.mic-btn.recording {
+  background: var(--primary-red);
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(211, 47, 47, 0.7);
+  }
+  50% {
+    opacity: 0.8;
+    box-shadow: 0 0 0 8px rgba(211, 47, 47, 0);
+  }
 }
 
 /* ========================================
@@ -908,4 +1006,106 @@ body {
 
 .poi-pill-ranking.rank-d {
   color: #757575; /* Gray for D rank */
+}
+
+/* ========================================
+   Thinking Overlay Modal
+   ======================================== */
+.thinking-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(33, 33, 33, 0.85);
+  backdrop-filter: blur(4px);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: overlayFadeIn 0.3s ease-out;
+}
+
+@keyframes overlayFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.thinking-overlay-content {
+  text-align: center;
+  padding: var(--spacing-xl);
+  max-width: 600px;
+  animation: overlayContentSlideUp 0.4s ease-out;
+}
+
+@keyframes overlayContentSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.thinking-overlay-spinner {
+  width: 80px;
+  height: 80px;
+  margin: 0 auto var(--spacing-lg);
+  border: 6px solid rgba(255, 255, 255, 0.2);
+  border-top-color: var(--primary-blue);
+  border-right-color: var(--primary-red);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.thinking-overlay-title {
+  font-size: 2rem;
+  font-weight: 700;
+  color: white;
+  margin-bottom: var(--spacing-md);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.thinking-overlay-subtitle {
+  font-size: 1.2rem;
+  color: rgba(255, 255, 255, 0.9);
+  margin-bottom: var(--spacing-xl);
+  line-height: 1.6;
+}
+
+.thinking-overlay-progress {
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: var(--spacing-lg);
+}
+
+.thinking-overlay-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--primary-red), var(--primary-blue), var(--accent-orange));
+  background-size: 200% 100%;
+  animation: progressSlide 2s linear infinite;
+}
+
+@keyframes progressSlide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
 }

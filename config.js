@@ -186,6 +186,51 @@ export const CONFIG = {
 
   // Maximum chat messages to display
   MAX_CHAT_MESSAGES: 50,
+
+  // ============================================
+  // SPEECH RECOGNITION SETTINGS
+  // ============================================
+
+  // Enable speech recognition (microphone button)
+  SPEECH_RECOGNITION_ENABLED: true,
+
+  // Use Google Cloud Speech-to-Text API (requires Lambda with GOOGLE_SPEECH_API_KEY)
+  // If false, uses browser Web Speech API (works immediately, no setup)
+  SPEECH_USE_GOOGLE_CLOUD: false,  // Using free Web Speech API (local, instant)
+
+  // Silence detection (for automatic stop when using MediaRecorder)
+  SPEECH_SILENCE_THRESHOLD: 0.01,      // Audio level threshold for silence (0-1)
+  SPEECH_SILENCE_DURATION: 2000,       // Silence duration in ms before auto-stop
+  SPEECH_MIN_RECORDING_TIME: 500,      // Minimum recording time in ms
+
+  // ============================================
+  // TEXT-TO-SPEECH SETTINGS
+  // ============================================
+
+  // Enable text-to-speech (speaker icons and auto-speak)
+  TTS_ENABLED: true,
+
+  // Auto-speak all AI responses (toggle button in header)
+  TTS_AUTO_SPEAK: true,  // Auto-speak enabled by default
+
+  // Use Google Cloud Text-to-Speech API (requires Lambda with GOOGLE_TTS_API_KEY)
+  // If false, uses browser Web Speech API (works immediately, no setup)
+  TTS_USE_GOOGLE_CLOUD: true,  // Changed to test Google Cloud TTS
+
+  // Voice settings
+  TTS_RATE: 1.0,                       // Speech rate (0.1-10, default: 1.0)
+  TTS_PITCH: 1.0,                      // Pitch (0-2 for Web Speech, -20 to 20 for Google)
+  TTS_VOLUME: 1.0,                     // Volume (0-1, default: 1.0)
+
+  // Google Cloud TTS voice name (when TTS_USE_GOOGLE_CLOUD is true)
+  // Examples: 'ja-JP-Neural2-B' (female), 'ja-JP-Neural2-C' (male)
+  //           'en-US-Neural2-F' (female), 'en-US-Neural2-J' (male)
+  TTS_GOOGLE_VOICE_NAME: 'ja-JP-Neural2-D',  // Male professional voice
+
+  // Use AI to summarize text before speaking (removes verbose data intelligently)
+  // If true: Makes separate API call to Claude for smart summarization (~0.5-2s delay, +17% cost)
+  // If false: Speaks full text as-is
+  TTS_USE_AI_SUMMARY: true,  // Enable AI-powered speech summarization
 };
 
 /**

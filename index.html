@@ -12,6 +12,7 @@
     script-src 'self' 'wasm-unsafe-eval' https://api.mapbox.com https://unpkg.com https://cdn.jsdelivr.net;
     style-src 'self' 'unsafe-inline' https://api.mapbox.com;
     img-src 'self' data: https: blob:;
+    media-src 'self' blob:;
     connect-src 'self' https://api.mapbox.com https://events.mapbox.com https://unpkg.com https://cdn.jsdelivr.net https://*.lambda-url.us-east-1.on.aws https://www.j-jti.com;
     font-src 'self' data:;
     worker-src 'self' blob:;
@@ -50,6 +51,9 @@
         <div id="token-counter" class="token-counter" title="Conversation token usage">
           <span id="token-count">0k / 200k (0%)</span>
         </div>
+        <button id="tts-toggle" class="tts-toggle-btn" title="Auto-speak responses">
+          <span id="tts-icon">🔇</span>
+        </button>
         <button id="lang-toggle" class="lang-btn" title="Switch language">English</button>
       </div>
     </div>
@@ -76,6 +80,9 @@
             placeholder="日本の場所について聞いてください...（例：「渋谷のレストランを探して」）"
             autocomplete="off"
           />
+          <button id="micBtn" class="mic-btn" title="音声入力 / Voice input">
+            <span id="micIcon">🎤</span>
+          </button>
           <button id="sendBtn" class="send-btn">
             <span id="sendBtnText">送信</span>
           </button>
@@ -147,6 +154,18 @@
         <button class="modal-close" id="closeErrorModal">×</button>
       </div>
       <div class="modal-body" id="errorMessage"></div>
+    </div>
+  </div>
+
+  <!-- Thinking Overlay Modal -->
+  <div class="thinking-overlay" id="thinkingOverlay" style="display: none;">
+    <div class="thinking-overlay-content">
+      <div class="thinking-overlay-spinner"></div>
+      <h2 class="thinking-overlay-title">🤔 検索中... / Searching...</h2>
+      <p class="thinking-overlay-subtitle" id="thinkingOverlayMessage">データベースを検索しています...</p>
+      <div class="thinking-overlay-progress">
+        <div class="thinking-overlay-progress-bar"></div>
+      </div>
     </div>
   </div>
 
