@@ -927,10 +927,12 @@ Try asking:
   }
 
   /**
-   * Translate POI data from Japanese to English using Claude (direct API call)
+   * Translate POI data from Japanese to target language using Claude (direct API call)
    * Uses LRU cache to avoid redundant translations
+   * @param {Object} properties - POI properties to translate
+   * @param {string} targetLang - Target language code ('en' or 'ko')
    */
-  async translatePoiData(properties) {
+  async translatePoiData(properties, targetLang = 'en') {
     try {
       const fieldsToTranslate = {
         name: properties.title || properties.name || '',
@@ -946,8 +948,8 @@ Try asking:
         return properties;
       }
 
-      // Check cache first (use POI ID or name as key)
-      const cacheKey = properties.id || fieldsToTranslate.name;
+      // Check cache first (use POI ID or name + language as key)
+      const cacheKey = `${properties.id || fieldsToTranslate.name}_${targetLang}`;
       if (this.translationCache.has(cacheKey)) {
         // Move to end (LRU: mark as recently used)
         const cached = this.translationCache.get(cacheKey);
@@ -956,7 +958,8 @@ Try asking:
         return { ...properties, ...cached };
       }
 
-      const translationPrompt = `Translate the following Japanese POI (Point of Interest) information to English. Keep it concise and natural. Preserve formatting and structure.
+      const targetLanguage = targetLang === 'ko' ? 'Korean' : 'English';
+      const translationPrompt = `Translate the following Japanese POI (Point of Interest) information to ${targetLanguage}. Keep it concise and natural. Preserve formatting and structure.
 
 Name: ${fieldsToTranslate.name}
 ${fieldsToTranslate.address ? `Address: ${fieldsToTranslate.address}` : ''}
@@ -1014,8 +1017,8 @@ Rating: [translated rating]`;
           }
         }
 
-        // Store in cache with LRU eviction
-        const cacheKey = properties.id || fieldsToTranslate.name;
+        // Store in cache with LRU eviction (include language in cache key)
+        const cacheKey = `${properties.id || fieldsToTranslate.name}_${targetLang}`;
 
         // Evict oldest entry if cache is full
         if (this.translationCache.size >= this.MAX_TRANSLATION_CACHE_SIZE) {
@@ -1065,7 +1068,10 @@ Rating: [translated rating]`;
         return;
       }
 
-      if (this.i18n.isEnglish()) {
+      const currentLang = this.i18n.getCurrentLanguage();
+      const needsTranslation = currentLang === 'en' || currentLang === 'ko';
+
+      if (needsTranslation) {
         // Show modal with loading indicator
         modal.style.display = 'flex';
 
@@ -1086,9 +1092,10 @@ Rating: [translated rating]`;
           z-index: 1000;
           border-radius: 12px;
         `;
+        const translatingText = currentLang === 'ko' ? 'Translating to Korean...' : 'Translating to English...';
         loadingOverlay.innerHTML = `
           <div style="font-size: 2rem; margin-bottom: 1rem;">🌐</div>
-          <div style="font-size: 1rem; color: #666;">Translating to English...</div>
+          <div style="font-size: 1rem; color: #666;">${translatingText}</div>
         `;
         modal.querySelector('.modal-content').appendChild(loadingOverlay);
       }
@@ -1128,13 +1135,15 @@ Rating: [translated rating]`;
       // Update POI modal labels based on current language
       this.updatePoiModalLabels();
 
-      // Translate to English if language is set to English
-      if (this.i18n.isEnglish()) {
+      // Translate to target language if needed (English or Korean)
+      const currentLang = this.i18n.getCurrentLanguage();
+      if (currentLang === 'en' || currentLang === 'ko') {
         try {
-          properties = await this.translatePoiData(properties);
+          properties = await this.translatePoiData(properties, currentLang);
         } catch (error) {
           errorLogger.warn('POI Modal', 'Translation failed, using original data', {
             poiName: properties.title || properties.name,
+            targetLang: currentLang,
             error: error.message
           });
           // Continue with original properties if translation fails
