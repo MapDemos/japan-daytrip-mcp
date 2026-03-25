@@ -194,9 +194,9 @@ export const CONFIG = {
   // Enable speech recognition (microphone button)
   SPEECH_RECOGNITION_ENABLED: true,
 
-  // Use Google Cloud Speech-to-Text API (requires Lambda with GOOGLE_SPEECH_API_KEY)
-  // If false, uses browser Web Speech API (works immediately, no setup)
-  SPEECH_USE_GOOGLE_CLOUD: false,  // Using free Web Speech API (local, instant)
+  // Force MediaRecorder + Google Cloud Speech-to-Text API (requires Lambda with GOOGLE_SPEECH_API_KEY)
+  // If false, uses browser Web Speech API when available (works immediately, no setup)
+  SPEECH_USE_MEDIA_RECORDER: true,  // Use Google Cloud Speech-to-Text via Lambda proxy
 
   // Silence detection (for automatic stop when using MediaRecorder)
   SPEECH_SILENCE_THRESHOLD: 0.01,      // Audio level threshold for silence (0-1)
