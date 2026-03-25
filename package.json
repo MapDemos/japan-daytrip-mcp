@@ -1,6 +1,6 @@
 {
   "name": "japan-daytrip-mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AI-powered Japan travel assistant with triple MCP architecture (Mapbox MCP + Rurubu MCP + Map Tools)",
   "main": "index.js",
   "type": "module",
