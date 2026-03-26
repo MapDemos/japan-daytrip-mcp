@@ -196,7 +196,7 @@ export const CONFIG = {
 
   // Force MediaRecorder + Google Cloud Speech-to-Text API (requires Lambda with GOOGLE_SPEECH_API_KEY)
   // If false, uses browser Web Speech API when available (works immediately, no setup)
-  SPEECH_USE_MEDIA_RECORDER: true,  // Use Google Cloud Speech-to-Text via Lambda proxy
+  SPEECH_USE_MEDIA_RECORDER: false,  // Use browser Web Speech API (instant, free)
 
   // Silence detection (for automatic stop when using MediaRecorder)
   SPEECH_SILENCE_THRESHOLD: 0.01,      // Audio level threshold for silence (0-1)
